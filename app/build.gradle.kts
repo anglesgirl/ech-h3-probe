@@ -5,6 +5,10 @@ plugins {
 
 val dohUrl = System.getenv("ECH_DOH_URL") ?: "https://tgxjjdszvu.cloudflare-gateway.com/dns-query"
 
+// CI 注入固定签名。不固定的话每个 runner 都会现生成一个 debug.keystore，
+// 于是每轮构建签名都不同 → 用户无法覆盖安装（实测表现：每次都提示"签名不一致"）。
+val pinnedKeystore = System.getenv("PROBE_KEYSTORE")?.let { java.io.File(it) }?.takeIf { it.exists() }
+
 android {
     namespace = "com.anglesgirl.echh3probe"
     compileSdk = 36
@@ -20,6 +24,17 @@ android {
     }
 
     buildFeatures { buildConfig = true }
+
+    signingConfigs {
+        if (pinnedKeystore != null) {
+            getByName("debug") {
+                storeFile = pinnedKeystore
+                storePassword = System.getenv("PROBE_STORE_PASS")
+                keyAlias = System.getenv("PROBE_KEY_ALIAS") ?: "probe"
+                keyPassword = System.getenv("PROBE_KEY_PASS") ?: System.getenv("PROBE_STORE_PASS")
+            }
+        }
+    }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

@@ -63,6 +63,21 @@ jobs:
               || { echo "✗ JNI 符号缺失"; exit 1; }
           done
 
+      - name: 注入固定签名（否则每轮签名不同，用户无法覆盖安装）
+        env:
+          KS_B64: ${{ secrets.PROBE_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.PROBE_STORE_PASS }}
+        run: |
+          if [ -z "${KS_B64:-}" ]; then echo "没有固定签名 secret，沿用 runner 默认 debug 签名"; exit 0; fi
+          echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/probe.jks"
+          {
+            echo "PROBE_KEYSTORE=$RUNNER_TEMP/probe.jks"
+            echo "PROBE_STORE_PASS=$KS_PASS"
+            echo "PROBE_KEY_ALIAS=probe"
+            echo "PROBE_KEY_PASS=$KS_PASS"
+          } >> "$GITHUB_ENV"
+          echo "固定签名已就位：$(ls -l $RUNNER_TEMP/probe.jks | awk '{print $5}') 字节"
+
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.9"
