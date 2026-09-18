@@ -57,12 +57,25 @@ class MainActivity : Activity() {
         installCrashHandler()
 
         root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        btn = Button(this).apply { text = "开始测试（原生通道）" }
-        btnWv = Button(this).apply { text = "WebView 直开测试（不拦截、不注入）" }
+        // 按钮固定吸顶：按钮行横排 + 日志块按权重占满剩余空间，
+        // 避免日志太长时把按钮挤出可视区域（用户实测"看不到按钮"）。
+        val bar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        btn = Button(this).apply {
+            text = "原生测试"
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        btnWv = Button(this).apply {
+            text = "WebView 直开"
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        bar.addView(btn)
+        bar.addView(btnWv)
+        root.addView(bar)
         out = TextView(this).apply { textSize = 12f; setPadding(24, 24, 24, 24) }
-        root.addView(btn)
-        root.addView(btnWv)
-        root.addView(ScrollView(this).apply { addView(out) })
+        root.addView(
+            ScrollView(this).apply { addView(out) },
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f),
+        )
         setContentView(root)
 
         // 上次结果先显示出来（崩溃也不会丢）
