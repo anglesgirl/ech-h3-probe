@@ -66,6 +66,9 @@ jobs:
         with:
           gradle-version: "8.9"
 
+      - name: 先只编 Kotlin（语法问题要立刻暴露，不等 NDK）
+        run: gradle compileDebugKotlin --no-daemon
+
       - name: 打 APK
         run: gradle assembleDebug --no-daemon
 

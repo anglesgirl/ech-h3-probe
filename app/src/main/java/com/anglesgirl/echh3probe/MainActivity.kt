@@ -2,7 +2,13 @@ package com.anglesgirl.echh3probe
 
 import android.app.Activity
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.telephony.TelephonyManager
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -37,15 +43,18 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        btn = Button(this).apply { text = "开始测试" }
+        btn = Button(this).apply { text = "开始测试（原生通道）" }
         out = TextView(this).apply {
             textSize = 12f
             setPadding(24, 24, 24, 24)
         }
+        val btnWv = Button(this).apply { text = "WebView 直开测试（不拦截、不注入）" }
         root.addView(btn)
+        root.addView(btnWv)
         root.addView(ScrollView(this).apply { addView(out) })
         setContentView(root)
         btn.setOnClickListener { runTests() }
+        btnWv.setOnClickListener { runWebViewArm() }
         runTests()
     }
 
@@ -126,6 +135,53 @@ class MainActivity : Activity() {
             say("== 结束 ==")
             btn.isEnabled = true
         }
+    }
+
+    /**
+     * WebView 对照组：直接 loadUrl，不拦截、不注入、不给 ECH。
+     * 目的：验证"第一次连接是否被 TCP RST"（若被 RST，H3 永远没机会上场）。
+     * 目标选 www.pixiv.net：它是 CF 托管（系统 DNS 直接给 CF IP，可达），
+     * 但 SNI 在国内被拦 —— 这样失败原因就只可能是 SNI/协议，而不是 IP 不可达。
+     */
+    private fun runWebViewArm() {
+        log.setLength(0)
+        say("===== WebView 直开（不拦截/不注入/无 ECH）=====")
+        say("载体 : " + carrier())
+        val target = "https://www.pixiv.net/"
+        say("目标 : " + target)
+        var reported = false
+        val wv = WebView(this)
+        wv.settings.javaScriptEnabled = true
+        wv.settings.domStorageEnabled = true
+        wv.webViewClient = object : WebViewClient() {
+            override fun onPageFinished(view: WebView?, url: String?) {
+                if (reported) return
+                reported = true
+                say("结果 : 页面加载完成 ✓ url=" + url)
+                say("说明 : 若这里成功，且此时连接是 QUIC/H3，则你的判断成立。")
+                btn.isEnabled = true
+            }
+
+            override fun onReceivedError(
+                view: WebView?,
+                request: WebResourceRequest?,
+                error: WebResourceError?,
+            ) {
+                if (request?.isForMainFrame != true) return
+                reported = true
+                say("结果 : 加载失败 ✗ code=" + error?.errorCode + " desc=" + error?.description)
+                say("说明 : code=-101/-102 等属连接被重置/拒绝 → 第一次 TCP 就被掐，H3 无机可乘。")
+                btn.isEnabled = true
+            }
+        }
+        wv.loadUrl(target)
+        Handler(Looper.getMainLooper()).postDelayed({
+            if (!reported) {
+                reported = true
+                say("结果 : 20 秒内既没完成也没报错（大概率卡在被丢弃的连接上）")
+                btn.isEnabled = true
+            }
+        }, 20_000)
     }
 
     /** DoH：拿 A 记录的 IP 和 HTTPS 记录里的 ech= */
