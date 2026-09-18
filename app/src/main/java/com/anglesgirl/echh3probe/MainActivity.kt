@@ -128,11 +128,28 @@ class MainActivity : Activity() {
         runOnUiThread(block)
     }
 
+    /** MCC/MNC → 运营商（权威标识；运营商名字常被设备/系统映射错，实测广电被标成电信） */
+    private fun opLabel(o: String): String = when (o) {
+        "46000", "46002", "46004", "46007", "46008" -> "移动"
+        "46015" -> "广电(走移动网)"
+        "46001", "46006", "46009" -> "联通"
+        "46003", "46005", "46011" -> "电信"
+        "" -> "未知"
+        else -> "其他($o)"
+    }
+
     private fun carrier(): String = try {
         val tm = getSystemService(TELEPHONY_SERVICE) as TelephonyManager
-        "网络=${tm.networkOperatorName}  卡=${tm.simOperatorName}"
+        val net = tm.networkOperator.orEmpty()   // 当前驻留网络的 MCC+MNC
+        val sim = tm.simOperator.orEmpty()       // 卡的 MCC+MNC
+        val roaming = try {
+            tm.isNetworkRoaming
+        } catch (_: Throwable) {
+            false
+        }
+        "网络=${tm.networkOperatorName}[$net→${opLabel(net)}] 卡=${tm.simOperatorName}[$sim→${opLabel(sim)}] 漫游=$roaming"
     } catch (e: Exception) {
-        "网络=未知"
+        "网络=读取失败(${e.message})"
     }
 
     private fun nowIso(): String {
