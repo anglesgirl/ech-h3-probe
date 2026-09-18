@@ -1,0 +1,8 @@
+rust/target/
+rust/vendor/
+app/src/main/jniLibs/
+app/build/
+build/
+.gradle/
+local.properties
+*.apk

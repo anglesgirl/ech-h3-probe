@@ -1,0 +1,82 @@
+name: build-probe
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md", "docs/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi
+
+      - uses: android-actions/setup-android@v4
+
+      - name: 装 NDK 与 SDK 组件
+        run: |
+          sdkmanager --install "ndk;27.0.12077973" "platforms;android-36" "build-tools;36.0.0" > /dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.0.12077973" >> $GITHUB_ENV
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - name: 装 cargo-ndk
+        run: command -v cargo-ndk || cargo install cargo-ndk --locked
+
+      - name: 取 quiche 源码并打 ECH 补丁
+        run: |
+          set -e
+          curl -sSL https://static.crates.io/crates/quiche/quiche-0.22.0.crate -o /tmp/quiche.crate
+          mkdir -p rust/vendor && tar -xzf /tmp/quiche.crate -C rust/vendor
+          rm -rf rust/vendor/quiche && mv rust/vendor/quiche-0.22.0 rust/vendor/quiche
+          python3 tools/patch_quiche.py rust/vendor/quiche
+
+      - name: 编译 Rust 动态库（构建铁律：只留主库 + 验符号）
+        run: |
+          set -e
+          cd rust
+          cargo ndk -t arm64-v8a -t armeabi-v7a -o ../app/src/main/jniLibs build --release
+          echo "--- 产物"
+          find ../app/src/main/jniLibs -name "*.so" -exec ls -la {} \;
+          # 铁律：多余 libquiche*.so 一律删掉，只留主库
+          find ../app/src/main/jniLibs -name "libquiche*.so" -delete
+          NM=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm
+          for abi in arm64-v8a armeabi-v7a; do
+            echo "--- $abi 符号校验"
+            $NM -D ../app/src/main/jniLibs/$abi/libech_h3_probe.so | grep -c "Java_com_anglesgirl_echh3probe_ProbeNative_h3Fetch" \
+              || { echo "✗ JNI 符号缺失"; exit 1; }
+          done
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: 打 APK
+        run: gradle assembleDebug --no-daemon
+
+      - name: 发布 APK（避免占用 Actions 产物配额）
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          APK=$(find app/build/outputs/apk/debug -name "*.apk" | head -1)
+          echo "APK=$APK  ($(du -h "$APK" | cut -f1))"
+          TAG="probe-${{ github.run_number }}"
+          gh release create "$TAG" "$APK" --title "ECH-H3 探针 $TAG" --notes "提交 ${{ github.sha }}" || gh release upload "$TAG" "$APK" --clobber
+          gh release view "$TAG" --json tagName,assets -q '.tagName, (.assets[].name)'
