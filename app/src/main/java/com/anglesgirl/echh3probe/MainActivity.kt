@@ -43,6 +43,7 @@ class MainActivity : Activity() {
     private lateinit var out: TextView
     private lateinit var btn: Button
     private lateinit var btnWv: Button
+    private lateinit var btnAlt: Button
     private lateinit var root: LinearLayout
     private val log = StringBuilder()
     private var wv: WebView? = null
@@ -78,8 +79,13 @@ class MainActivity : Activity() {
             text = "WebView 直开"
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         }
+        btnAlt = Button(this).apply {
+            text = "Alt-Svc 猜想"
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
         bar.addView(btn)
         bar.addView(btnWv)
+        bar.addView(btnAlt)
         // 按钮行必须显式 MATCH_PARENT：否则父行按 wrap_content 测量，
         // 里面 width=0 + weight=1 的按钮会被算成 0 宽（实测按钮完全不可见）。
         root.addView(bar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
@@ -104,6 +110,13 @@ class MainActivity : Activity() {
 
         btn.setOnClickListener { runTests() }
         btnWv.setOnClickListener { runWebViewArm() }
+        btnAlt.setOnClickListener {
+            thread {
+                runAltSvcArm(true, "注入 Alt-Svc: h3")
+                runAltSvcArm(false, "对照：不注入")
+                finishRun("alt-svc-arm")
+            }
+        }
     }
 
     // ---------------- 基础设施 ----------------
@@ -364,6 +377,68 @@ class MainActivity : Activity() {
     }
 
     // ---------------- DoH / CA ----------------
+
+    /**
+     * Alt-Svc 猜想：拦截主文档时，在合成响应里塞 `Alt-Svc: h3`，
+     * 看 WebView 会不会把同一个站的后续请求（我们不拦截、让 WebView 自己连）
+     * 升级到 HTTP/3。协议由页面侧 nextHopProtocol 回报 —— 这是唯一能拿到真实协议的办法。
+     */
+    private fun runAltSvcArm(withAltSvc: Boolean, label: String) {
+        say("---- $label ----")
+        val latch = java.util.concurrent.CountDownLatch(1)
+        val density = resources.displayMetrics.density
+        ui {
+            val w = WebView(this)
+            w.settings.javaScriptEnabled = true
+            w.layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, (density * 180).toInt(),
+            )
+            w.addJavascriptInterface(
+                object {
+                    @android.webkit.JavascriptInterface
+                    fun report(s: String) {
+                        say("  页面回报 : " + s)
+                        latch.countDown()
+                    }
+                },
+                "AltSvcProbe",
+            )
+            w.webViewClient = object : WebViewClient() {
+                override fun shouldInterceptRequest(
+                    v: WebView?,
+                    request: WebResourceRequest?,
+                ): WebResourceResponse? {
+                    val u = request?.url?.toString() ?: return null
+                    if (!u.contains("intercept=1")) return null // 其它请求放行 → 由 WebView 自己建连
+                    val html =
+                        "<html><body><script>" +
+                            "var done=function(m){AltSvcProbe.report(m);};" +
+                            "fetch('https://www.pixiv.net/robots.txt',{cache:'no-store'})" +
+                            ".then(function(r){return r.arrayBuffer().then(function(b){" +
+                            "var es=performance.getEntriesByType('resource').filter(function(e){return e.nextHopProtocol;});" +
+                            "var p=es.length?es[es.length-1].nextHopProtocol:'no-entry';" +
+                            "done('子资源成功 status='+r.status+' 协议='+p+' 字节='+b.byteLength);});})" +
+                            ".catch(function(e){done('子资源失败 '+e);});" +
+                            "setTimeout(function(){done('超时：12 秒无结果');},12000);" +
+                            "</script></body></html>"
+                    val resp = WebResourceResponse(
+                        "text/html", "utf-8",
+                        java.io.ByteArrayInputStream(html.toByteArray()),
+                    )
+                    if (withAltSvc) {
+                        resp.responseHeaders = mapOf("Alt-Svc" to "h3=\":443\"; ma=86400")
+                    }
+                    return resp
+                }
+            }
+            root.addView(w, 3)
+            w.loadUrl("https://www.pixiv.net/?intercept=1")
+        }
+        if (!latch.await(20, java.util.concurrent.TimeUnit.SECONDS)) {
+            say("  （20 秒无回报）")
+        }
+        say("")
+    }
 
     /** DoH：拿 A 记录的 IP 和 HTTPS 记录里的 ech= */
     private fun resolveViaGateway(host: String): Pair<String, String> {
