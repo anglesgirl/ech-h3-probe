@@ -83,3 +83,31 @@ jobs:
           TAG="probe-${{ github.run_number }}"
           gh release create "$TAG" "$APK" --title "ECH-H3 探针 $TAG" --notes "提交 ${{ github.sha }}" || gh release upload "$TAG" "$APK" --clobber
           gh release view "$TAG" --json tagName,assets -q '.tagName, (.assets[].name)'
+
+      # 成功/失败都通知；只发文字（附件由本机 Bot API 发，CI 直传要十几分钟）
+      - name: 通知构建结果
+        if: always()
+        env:
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.run_id }}
+          SHA: ${{ github.sha }}
+          JOB_STATUS: ${{ job.status }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          if [ -z "${TG_TOKEN:-}" ] || [ -z "${TG_CHAT:-}" ]; then
+            echo "缺少 TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID，跳过通知"; exit 0
+          fi
+          APK=$(find app/build/outputs/apk/debug -name "*.apk" 2>/dev/null | head -1)
+          SIZE="-"; [ -n "$APK" ] && SIZE=$(stat -c%s "$APK")
+          FAILED=$(gh run view "$RUN_ID" --repo "$REPO" --json jobs \
+            -q '[.jobs[].steps[] | select(.conclusion=="failure") | .name] | join(", ")' 2>/dev/null)
+          TEXT=$(printf '【ECH-H3 探针】%s\nSHA: %.7s\nAPK: %s (%s 字节)\n失败步骤: %s\nhttps://github.com/%s/actions/runs/%s' \
+            "$JOB_STATUS" "$SHA" "$(basename "${APK:-无}")" "$SIZE" "${FAILED:-无}" "$REPO" "$RUN_ID")
+          RESP=$(curl -sS --fail-with-body -X POST \
+            "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+            -d "chat_id=${TG_CHAT}" --data-urlencode "text=${TEXT}") || { echo "✗ 请求失败: $RESP"; exit 1; }
+          echo "$RESP" | grep -q '"ok":true' || { echo "✗ Telegram 未确认送达: $RESP"; exit 1; }
+          echo "✓ 通知已送达"
