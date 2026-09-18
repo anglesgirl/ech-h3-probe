@@ -84,13 +84,12 @@ class MainActivity : Activity() {
             say("网关 : " + BuildConfig.DOH_URL)
             say("")
 
-            val caPath: String
+            var caPath = ""
             try {
                 caPath = exportSystemCas()
                 say("[CA] 系统证书已导出：" + File(caPath).length() + " 字节")
             } catch (e: Exception) {
-                say("[CA] 导出失败：" + e.message)
-                caPath = ""
+                say("[CA] 导出失败：" + e.message + "（将退化为系统默认 CA）")
             }
 
             val host = "i.pximg.net"
