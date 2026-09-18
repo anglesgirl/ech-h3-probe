@@ -8,6 +8,7 @@ import android.telephony.TelephonyManager
 import android.view.ViewGroup
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Button
@@ -431,7 +432,7 @@ class MainActivity : Activity() {
                     return resp
                 }
             }
-            root.addView(w, 3)
+            root.addView(w) // 追加在最后（不能给越界索引，否则 IndexOutOfBounds）
             w.loadUrl("https://www.pixiv.net/?intercept=1")
         }
         if (!latch.await(20, java.util.concurrent.TimeUnit.SECONDS)) {
