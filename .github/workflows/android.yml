@@ -100,10 +100,14 @@ jobs:
           if [ -z "${TG_TOKEN:-}" ] || [ -z "${TG_CHAT:-}" ]; then
             echo "缺少 TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID，跳过通知"; exit 0
           fi
-          APK=$(find app/build/outputs/apk/debug -name "*.apk" 2>/dev/null | head -1)
-          SIZE="-"; [ -n "$APK" ] && SIZE=$(stat -c%s "$APK")
+          # 注意：GitHub 的 run 默认是 bash -e，任何一条非零退出都会让整步瞬间失败；
+          # 也不能把 stderr 丢掉，否则失败时日志一片空白，根本看不出原因。
+          APK=$(find app/build/outputs/apk/debug -name "*.apk" 2>/dev/null | head -1 || true)
+          SIZE="-"
+          if [ -n "$APK" ]; then SIZE=$(stat -c%s "$APK" || echo "?"); fi
           FAILED=$(gh run view "$RUN_ID" --repo "$REPO" --json jobs \
-            -q '[.jobs[].steps[] | select(.conclusion=="failure") | .name] | join(", ")' 2>/dev/null)
+            -q '[.jobs[].steps[] | select(.conclusion=="failure") | .name] | join(", ")' 2>&1 || true)
+          echo "APK=${APK:-无} size=$SIZE failed_step=${FAILED:-无}"
           TEXT=$(printf '【ECH-H3 探针】%s\nSHA: %.7s\nAPK: %s (%s 字节)\n失败步骤: %s\nhttps://github.com/%s/actions/runs/%s' \
             "$JOB_STATUS" "$SHA" "$(basename "${APK:-无}")" "$SIZE" "${FAILED:-无}" "$REPO" "$RUN_ID")
           RESP=$(curl -sS --fail-with-body -X POST \
