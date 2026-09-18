@@ -95,12 +95,15 @@ class MainActivity : Activity() {
             say("[DoH] $host → $ip，ECH " + (if (echB64.isEmpty()) "缺失 ✗" else echB64.length.toString() + " 字符 ✓"))
             say("")
 
-            // 连测 3 次，看抖动
+            // 关键对照：带 ECH 与 不带 ECH（用户判断：H3 暴露域名也能通，需要数据)
+            val arms = listOf("带 ECH" to echB64, "无 ECH（明文 SNI）" to "")
+            for ((armName, armEch) in arms) {
+            say("===== $armName =====")
             for (i in 1..3) {
-                say("---- 第 $i 次 ----")
+                say("---- $armName 第 $i 次 ----")
                 val t0 = System.currentTimeMillis()
                 val json = try {
-                    ProbeNative.h3Fetch(host, ip, echB64, imgPath, "https://www.pixiv.net/", caPath)
+                    ProbeNative.h3Fetch(host, ip, armEch, imgPath, "https://www.pixiv.net/", caPath)
                 } catch (t: Throwable) {
                     say("JNI 异常：" + t.message)
                     continue
@@ -118,6 +121,7 @@ class MainActivity : Activity() {
                 say("诊断   : sent=" + o.optLong("sent") + " recv=" + o.optLong("recv") +
                         " peer_err=" + o.optString("peer_err", "-") + " ｜ 墙钟=" + wall + "ms")
                 say("")
+            }
             }
             say("== 结束 ==")
             btn.isEnabled = true
