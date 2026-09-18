@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write
+  actions: read   # 通知步骤要查"哪一步失败"，缺这个会被 GitHub 403 拒绝
 
 jobs:
   build:
@@ -105,8 +106,16 @@ jobs:
           APK=$(find app/build/outputs/apk/debug -name "*.apk" 2>/dev/null | head -1 || true)
           SIZE="-"
           if [ -n "$APK" ]; then SIZE=$(stat -c%s "$APK" || echo "?"); fi
-          FAILED=$(gh run view "$RUN_ID" --repo "$REPO" --json jobs \
-            -q '[.jobs[].steps[] | select(.conclusion=="failure") | .name] | join(", ")' 2>&1 || true)
+          FAILED=""
+          if [ "$JOB_STATUS" != "success" ]; then
+            RAW=$(gh run view "$RUN_ID" --repo "$REPO" --json jobs \
+              -q '[.jobs[].steps[] | select(.conclusion=="failure") | .name] | join(", ")' 2>&1 || true)
+            # 不能把 API 报错原文当成"失败步骤"写进消息（曾把 403 当失败发给用户）
+            case "$RAW" in
+              *"HTTP "*|*"rror"*|*"not accessible"*) FAILED="(步骤名查询失败，请看 run 日志)" ;;
+              *) FAILED="$RAW" ;;
+            esac
+          fi
           echo "APK=${APK:-无} size=$SIZE failed_step=${FAILED:-无}"
           TEXT=$(printf '【ECH-H3 探针】%s\nSHA: %.7s\nAPK: %s (%s 字节)\n失败步骤: %s\nhttps://github.com/%s/actions/runs/%s' \
             "$JOB_STATUS" "$SHA" "$(basename "${APK:-无}")" "$SIZE" "${FAILED:-无}" "$REPO" "$RUN_ID")
