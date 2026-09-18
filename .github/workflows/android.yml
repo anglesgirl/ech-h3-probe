@@ -85,8 +85,19 @@ jobs:
       - name: 先只编 Kotlin（语法问题要立刻暴露，不等 NDK）
         run: gradle compileDebugKotlin --no-daemon
 
-      - name: 打 APK
-        run: gradle assembleDebug --no-daemon
+      - name: 打 APK（版本号走 -P 注入，避开配置缓存）
+        run: |
+          gradle assembleDebug --no-daemon \
+            -PappVersionCode="${{ github.run_number }}" \
+            -PappVersionName="1.0.${{ github.run_number }}"
+          echo "--- 核对产物清单里的版本号（防止再发出元数据不变的包）"
+          APK=$(find app/build/outputs/apk/debug -name "*.apk" | head -1)
+          python3 - "$APK" <<'PY'
+          import sys, zipfile
+          d = zipfile.ZipFile(sys.argv[1]).read('AndroidManifest.xml')
+          want = ("1.0." + "${{ github.run_number }}").encode('utf-16-le')
+          print("清单命中目标版本号:", d.count(want))
+          PY
 
       - name: 发布 APK（避免占用 Actions 产物配额）
         if: success()

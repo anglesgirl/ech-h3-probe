@@ -17,8 +17,10 @@ android {
         applicationId = "com.anglesgirl.echh3probe"
         minSdk = 24
         targetSdk = 36
-        versionCode = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
-        versionName = "1.0." + (System.getenv("GITHUB_RUN_NUMBER") ?: "1")
+        // 必须走 -P 属性：System.getenv 不在 Gradle 配置缓存的追踪范围内，
+        // 缓存会复用上一轮的版本号 → 实测每轮都编出同一个 1.0.7。
+        versionCode = providers.gradleProperty("appVersionCode").orNull?.toIntOrNull() ?: 1
+        versionName = providers.gradleProperty("appVersionName").orNull ?: "1.0.1"
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
         buildConfigField("String", "DOH_URL", "\"$dohUrl\"")
     }
