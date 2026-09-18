@@ -1,3 +1,7 @@
+// 必须显式导入 File：Kotlin DSL 脚本里 `java` 指向 JavaPluginExtension，
+// 直接写 java.io.File 会报 Unresolved reference: io（实测栽过）
+import java.io.File
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -7,7 +11,7 @@ val dohUrl = System.getenv("ECH_DOH_URL") ?: "https://tgxjjdszvu.cloudflare-gate
 
 // CI 注入固定签名。不固定的话每个 runner 都会现生成一个 debug.keystore，
 // 于是每轮构建签名都不同 → 用户无法覆盖安装（实测表现：每次都提示"签名不一致"）。
-val pinnedKeystore = System.getenv("PROBE_KEYSTORE")?.let { java.io.File(it) }?.takeIf { it.exists() }
+val pinnedKeystore = System.getenv("PROBE_KEYSTORE")?.let { File(it) }?.takeIf { it.exists() }
 
 android {
     namespace = "com.anglesgirl.echh3probe"
