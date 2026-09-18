@@ -1,0 +1,21 @@
+[package]
+name = "ech_h3_probe"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "ech_h3_probe"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "probe"
+path = "src/bin/probe.rs"
+
+[dependencies]
+quiche = { version = "0.22", features = ["boringssl-vendored", "ffi", "pkg-config-meta"] }
+rand = "0.8"
+jni = "0.21"
+
+# CI / 本地：先把 quiche 源码解出来并 patch，再用这份本地副本覆盖
+[patch.crates-io]
+quiche = { path = "vendor/quiche" }
