@@ -54,11 +54,19 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Android 15+ 对 targetSdk 35+ 的应用强制 edge-to-edge：内容会画到状态栏下面，
+        // 顶部第一行控件被状态栏盖住（用户实测"按钮被挡住"）。显式恢复传统行为。
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            window.setDecorFitsSystemWindows(true)
+        }
         installCrashHandler()
         // 标题栏带版本号：用户一眼能确认装的是哪一版（避免"装的不是我发的那份"这种排查黑洞）
         title = "ECH-H3 探针 v" + BuildConfig.VERSION_NAME
 
-        root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            fitsSystemWindows = true
+        }
         // 按钮固定吸顶：按钮行横排 + 日志块按权重占满剩余空间，
         // 避免日志太长时把按钮挤出可视区域（用户实测"看不到按钮"）。
         val bar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -72,7 +80,9 @@ class MainActivity : Activity() {
         }
         bar.addView(btn)
         bar.addView(btnWv)
-        root.addView(bar)
+        // 按钮行必须显式 MATCH_PARENT：否则父行按 wrap_content 测量，
+        // 里面 width=0 + weight=1 的按钮会被算成 0 宽（实测按钮完全不可见）。
+        root.addView(bar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         out = TextView(this).apply { textSize = 12f; setPadding(24, 24, 24, 24) }
         root.addView(
             ScrollView(this).apply { addView(out) },
