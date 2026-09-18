@@ -55,6 +55,8 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         installCrashHandler()
+        // 标题栏带版本号：用户一眼能确认装的是哪一版（避免"装的不是我发的那份"这种排查黑洞）
+        title = "ECH-H3 探针 v" + BuildConfig.VERSION_NAME
 
         root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         // 按钮固定吸顶：按钮行横排 + 日志块按权重占满剩余空间，
