@@ -46,6 +46,8 @@ class MainActivity : Activity() {
 
     private lateinit var out: TextView
     private lateinit var hostInput: EditText
+    private lateinit var ipInput: EditText
+    private lateinit var echInput: EditText
     private lateinit var btn: Button
     private lateinit var btnWv: Button
     private lateinit var btnColo: Button
@@ -118,6 +120,24 @@ class MainActivity : Activity() {
         // 预设行同样必须 MATCH_PARENT：父行 wrap_content 时 width=0+weight=1 的子按钮会被算成 0 宽
         root.addView(
             presets,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT),
+        )
+        // 指定 IP：留空 = 自动（自有网关 + 系统 DNS 各测一遍）；填了就只测这些地址（英文逗号分隔）
+        ipInput = EditText(this).apply {
+            hint = "指定 IP（留空=自动；可填多个，逗号分隔）"
+            textSize = 12f
+        }
+        root.addView(
+            ipInput,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT),
+        )
+        // 强制注入 ECH：留空 = 用 DoH 取到的 ech=；填了就用这一份（base64），可测"官方活值套到别的域名"
+        echInput = EditText(this).apply {
+            hint = "强制注入 ECH（base64，留空=用 DoH 的 ech=）"
+            textSize = 10f
+        }
+        root.addView(
+            echInput,
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT),
         )
         out = TextView(this).apply { textSize = 12f; setPadding(24, 24, 24, 24) }
@@ -299,22 +319,33 @@ class MainActivity : Activity() {
                     say("[DoH] 网关解析失败：" + e.message)
                     null
                 }
-                val echB64 = gateway?.second.orEmpty()
+                // 指定 IP 优先：填了就完全按用户给的地址测（覆盖两种自动来源）
+                val manualIps = ipInput.text.toString().split(',', '，')
+                    .map { it.trim() }.filter { it.isNotEmpty() }
                 val sources = LinkedHashMap<String, String>()
-                gateway?.first?.let { sources["网关（自有 DoH）"] = it }
-                runCatching {
-                    InetAddress.getAllByName(host)
-                        .filterIsInstance<Inet4Address>()
-                        .map { it.hostAddress }
-                        .take(2)
-                }.getOrNull()?.forEach { sources["系统原生 DNS"] = it }
+                if (manualIps.isNotEmpty()) {
+                    manualIps.forEachIndexed { i, ip -> sources["指定 IP #" + (i + 1)] = ip }
+                } else {
+                    gateway?.first?.let { sources["网关（自有 DoH）"] = it }
+                    runCatching {
+                        InetAddress.getAllByName(host)
+                            .filterIsInstance<Inet4Address>()
+                            .map { it.hostAddress }
+                            .take(2)
+                    }.getOrNull()?.forEach { sources["系统原生 DNS"] = it }
+                }
+                // 强制注入 ECH：填了就用这一份（base64），否则用 DoH 取到的 ech=
+                val manualEch = echInput.text.toString().replace(Regex("\\s"), "")
+                val echB64 = if (manualEch.isNotEmpty()) manualEch else gateway?.second.orEmpty()
+                val echFrom = if (manualEch.isNotEmpty()) "手动注入（强制）" else "DoH 的 ech="
                 if (sources.isEmpty()) {
-                    say("== 结束（解析失败）==")
+                    say("== 结束（无可用地址：请填指定 IP，或检查域名）==")
                     finishRun("probe-run")
                     return@thread
                 }
-                sources.forEach { (label, ip) -> say("[解析] $label → $ip") }
-                say("[ECH ] " + (if (echB64.isEmpty()) "缺失 ✗" else echB64.length.toString() + " 字符 ✓"))
+                say("[模式] 强制 H3：不依赖 Alt-Svc，直接起 QUIC/H3")
+                sources.forEach { (label, ip) -> say("[地址] $label → $ip") }
+                say("[ECH ] $echFrom：" + (if (echB64.isEmpty()) "无（将走明文 SNI）✗" else echB64.length.toString() + " 字符 ✓"))
                 say("")
 
                 val realPath = if (host.endsWith("pximg.net")) imgPath else "/"
