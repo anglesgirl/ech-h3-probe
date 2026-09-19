@@ -351,12 +351,20 @@ class MainActivity : Activity() {
                 val realPath = if (host.endsWith("pximg.net")) imgPath else "/"
                 val referer = if (host.endsWith("pximg.net")) "https://www.pixiv.net/" else "https://$host/"
 
+              // 判定口径：拿到 HTTP 响应（哪怕 403/404）就算握手成功 = 这条路径支持 H3；
+              // 握手被断/超时 = 不支持。带 ECH 与不带 ECH 分开记，才能分辨"是不是 ECH 的锅"。
+              val verdicts = mutableListOf<String>()
               for ((srcLabel, ip) in sources) {
                 say("########## 来源：$srcLabel（$ip）##########")
                 // 关键对照：带 ECH 与 不带 ECH（明文 SNI）
                 val arms = listOf("带 ECH" to echB64, "无 ECH（明文 SNI）" to "")
                 for ((armName, armEch) in arms) {
                     say("===== [$srcLabel] $armName =====")
+                    var okCount = 0
+                    var hsSum = 0L
+                    var totalSum = 0L
+                    var lastStatus = 0
+                    var lastErr = ""
                     for (i in 1..3) {
                         say("---- $armName 第 $i 次 ----")
                         val t0 = System.currentTimeMillis()
@@ -364,6 +372,7 @@ class MainActivity : Activity() {
                             ProbeNative.h3Fetch(host, ip, armEch, realPath, referer, caPath, "")
                         } catch (t: Throwable) {
                             say("JNI 异常：" + t.message)
+                            lastErr = "JNI 异常：" + t.message
                             continue
                         }
                         val wall = System.currentTimeMillis() - t0
@@ -379,9 +388,35 @@ class MainActivity : Activity() {
                         say("诊断   : sent=" + o.optLong("sent") + " recv=" + o.optLong("recv") +
                                 " peer_err=" + o.optString("peer_err", "-") + " ｜ 墙钟=" + wall + "ms")
                         say("")
+                        if (err.isNotEmpty() && err != "null") {
+                            lastErr = err
+                        } else {
+                            okCount++
+                            hsSum += o.optLong("hs_ms")
+                            totalSum += o.optLong("total_ms")
+                            lastStatus = o.optInt("status")
+                        }
+                    }
+                    verdicts += if (okCount > 0) {
+                        "✓ [$srcLabel] $armName：H3 可用（成功 " + okCount + "/3，平均握手 " + (hsSum / okCount) +
+                                "ms，平均总耗时 " + (totalSum / okCount) + "ms，状态 " + lastStatus + "）"
+                    } else {
+                        "✗ [$srcLabel] $armName：H3 不可用（0/3）" + (if (lastErr.isEmpty()) "" else "；末次错误：" + lastErr)
                     }
                 }
               }
+                say("")
+                say("============= 结论汇总 =============")
+                say("域名：" + host)
+                say("ECH ：" + echFrom + "（" + (if (echB64.isEmpty()) "无 → 走明文 SNI" else echB64.length.toString() + " 字符") + "）")
+                verdicts.forEach { say(it) }
+                say(
+                    if (verdicts.any { it.startsWith("✓") })
+                        "判定：以上覆盖到的路径里有【支持 H3】的组合，可考虑启用 H3。"
+                    else
+                        "判定：以上路径全部【不支持 H3】，应走 TCP（ECH 照旧）。"
+                )
+                say("===================================")
                 say("== 结束 ==")
                 finishRun("probe-run")
             } catch (t: Throwable) {
