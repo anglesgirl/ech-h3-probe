@@ -19,5 +19,6 @@ object ProbeNative {
         path: String,
         referer: String,
         caPath: String,
+        outFile: String,
     ): String
 }
