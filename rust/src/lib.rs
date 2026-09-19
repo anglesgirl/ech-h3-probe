@@ -19,6 +19,8 @@ pub struct H3Outcome {
     pub first_byte_ms: u128,
     pub total_ms: u128,
     pub body_len: usize,
+    /// 响应体字节（仅供 JNI 落盘，不参与 JSON）
+    pub body: Vec<u8>,
     pub cf_ray: String,
     pub server: String,
     pub error: Option<String>,
@@ -32,7 +34,7 @@ impl H3Outcome {
     fn err(msg: String) -> Self {
         H3Outcome {
             hs_ms: 0, established: false, alpn: String::new(), ech_override: None,
-            ech_retry_len: 0, status: 0, first_byte_ms: 0, total_ms: 0, body_len: 0,
+            ech_retry_len: 0, status: 0, first_byte_ms: 0, total_ms: 0, body_len: 0, body: Vec::new(),
             cf_ray: String::new(), server: String::new(), error: Some(msg),
             sent: 0, recv: 0, peer_err: String::new(),
         }
@@ -199,6 +201,7 @@ pub fn h3_fetch(
 
     let mut status: u16 = 0;
     let mut body_len = 0usize;
+    let mut body: Vec<u8> = Vec::new();
     let mut finished = false;
     let mut first_byte_ms: u128 = 0;
     let mut cf_ray = String::new();
@@ -234,6 +237,7 @@ pub fn h3_fetch(
                                     first_byte_ms = req_start.elapsed().as_millis();
                                 }
                                 body_len += n;
+                                body.extend_from_slice(&d[..n]);
                             }
                             Err(quiche::h3::Error::Done) => {}
                             Err(e) => {
@@ -302,6 +306,7 @@ pub fn h3_fetch(
         first_byte_ms,
         total_ms: req_start.elapsed().as_millis(),
         body_len,
+        body,
         cf_ray,
         server,
         error: None,
@@ -383,6 +388,7 @@ mod android_jni {
         path: JString,
         referer: JString,
         ca_path: JString,
+        out_file: JString,
     ) -> jstring {
         let host = jstr(&mut env, host);
         let peer_ip = jstr(&mut env, peer_ip);
@@ -390,6 +396,7 @@ mod android_jni {
         let path = jstr(&mut env, path);
         let referer = jstr(&mut env, referer);
         let ca_path = jstr(&mut env, ca_path);
+        let out_file = jstr(&mut env, out_file);
 
         let ech: Option<Vec<u8>> = if ech_b64.is_empty() {
             None
@@ -415,7 +422,18 @@ mod android_jni {
             Duration::from_secs(25),
         );
 
-        let out = env.new_string(outcome.to_json()).unwrap();
+        let mut saved = String::new();
+        if outcome.status == 200 && !outcome.body.is_empty() && !out_file.is_empty() {
+            match std::fs::write(&out_file, &outcome.body) {
+                Ok(_) => saved = out_file.clone(),
+                Err(e) => saved = format!("ERR:{}", e),
+            }
+        }
+        let mut json = outcome.to_json();
+        if !saved.is_empty() {
+            json = json.trim_end_matches('}').to_string() + &format!(",\"saved_to\":\"{}\"}}", saved);
+        }
+        let out = env.new_string(json).unwrap();
         out.into_raw()
     }
 

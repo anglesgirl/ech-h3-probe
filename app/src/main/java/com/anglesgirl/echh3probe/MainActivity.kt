@@ -12,6 +12,7 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Button
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -21,6 +22,8 @@ import java.io.File
 import java.io.PrintWriter
 import java.io.StringWriter
 import java.net.HttpURLConnection
+import java.net.Inet4Address
+import java.net.InetAddress
 import java.net.URL
 import java.security.KeyStore
 import java.security.cert.X509Certificate
@@ -42,8 +45,10 @@ import kotlin.concurrent.thread
 class MainActivity : Activity() {
 
     private lateinit var out: TextView
+    private lateinit var hostInput: EditText
     private lateinit var btn: Button
     private lateinit var btnWv: Button
+    private lateinit var btnColo: Button
     private lateinit var btnAlt: Button
     private lateinit var root: LinearLayout
     private val log = StringBuilder()
@@ -90,6 +95,31 @@ class MainActivity : Activity() {
         // 按钮行必须显式 MATCH_PARENT：否则父行按 wrap_content 测量，
         // 里面 width=0 + weight=1 的按钮会被算成 0 宽（实测按钮完全不可见）。
         root.addView(bar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        // 目标域名可编辑：H3 是否可用因域而异，探针必须能测任意站点。
+        hostInput = EditText(this).apply {
+            hint = "目标域名，如 api.bgm.tv"
+            setText("i.pximg.net")
+        }
+        root.addView(
+            hostInput,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT),
+        )
+        val presets = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        listOf("i.pximg.net", "api.bgm.tv", "lain.bgm.tv", "javchu.com", "hanime1.me", "ao3").forEach { label ->
+            val presetHost = if (label == "ao3") "archiveofourown.org" else label
+            presets.addView(Button(this).apply {
+                text = label
+                textSize = 9f
+                setPadding(0, 0, 0, 0)
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                setOnClickListener { hostInput.setText(presetHost) }
+            })
+        }
+        // 预设行同样必须 MATCH_PARENT：父行 wrap_content 时 width=0+weight=1 的子按钮会被算成 0 宽
+        root.addView(
+            presets,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT),
+        )
         out = TextView(this).apply { textSize = 12f; setPadding(24, 24, 24, 24) }
         root.addView(
             ScrollView(this).apply { addView(out) },
@@ -111,6 +141,17 @@ class MainActivity : Activity() {
 
         btn.setOnClickListener { runTests() }
         btnWv.setOnClickListener { runWebViewArm() }
+        btnColo = Button(this).apply {
+            text = "colo 对照"
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        bar.addView(btnColo)
+        btnColo.setOnClickListener {
+            thread {
+                runColoTraceArm()
+                finishRun("colo-trace")
+            }
+        }
         btnAlt.setOnClickListener {
             thread {
                 runAltSvcArm(true, "注入 Alt-Svc: h3")
@@ -247,31 +288,49 @@ class MainActivity : Activity() {
                     say("[CA] 导出失败：" + e.message + "（将退化为系统默认 CA）")
                 }
 
-                val host = "i.pximg.net"
-                val resolved = try {
+                val host = hostInput.text.toString().trim().ifBlank { "i.pximg.net" }
+                say("[目标] $host")
+
+                // 两种解析来源必须分开看：自有网关（择优 IP）vs 系统原生 DNS。
+                // H3 是否可用与"连到哪个 IP"强相关（例：i.pximg.net 原生不支持 H3，经自有网关才支持）。
+                val gateway = try {
                     resolveViaGateway(host)
                 } catch (e: Exception) {
-                    say("[DoH] 解析失败：" + e.message)
+                    say("[DoH] 网关解析失败：" + e.message)
                     null
                 }
-                if (resolved == null) {
+                val echB64 = gateway?.second.orEmpty()
+                val sources = LinkedHashMap<String, String>()
+                gateway?.first?.let { sources["网关（自有 DoH）"] = it }
+                runCatching {
+                    InetAddress.getAllByName(host)
+                        .filterIsInstance<Inet4Address>()
+                        .map { it.hostAddress }
+                        .take(2)
+                }.getOrNull()?.forEach { sources["系统原生 DNS"] = it }
+                if (sources.isEmpty()) {
                     say("== 结束（解析失败）==")
                     finishRun("probe-run")
                     return@thread
                 }
-                val (ip, echB64) = resolved
-                say("[DoH] $host → $ip，ECH " + (if (echB64.isEmpty()) "缺失 ✗" else echB64.length.toString() + " 字符 ✓"))
+                sources.forEach { (label, ip) -> say("[解析] $label → $ip") }
+                say("[ECH ] " + (if (echB64.isEmpty()) "缺失 ✗" else echB64.length.toString() + " 字符 ✓"))
                 say("")
 
+                val realPath = if (host.endsWith("pximg.net")) imgPath else "/"
+                val referer = if (host.endsWith("pximg.net")) "https://www.pixiv.net/" else "https://$host/"
+
+              for ((srcLabel, ip) in sources) {
+                say("########## 来源：$srcLabel（$ip）##########")
                 // 关键对照：带 ECH 与 不带 ECH（明文 SNI）
                 val arms = listOf("带 ECH" to echB64, "无 ECH（明文 SNI）" to "")
                 for ((armName, armEch) in arms) {
-                    say("===== $armName =====")
+                    say("===== [$srcLabel] $armName =====")
                     for (i in 1..3) {
                         say("---- $armName 第 $i 次 ----")
                         val t0 = System.currentTimeMillis()
                         val json = try {
-                            ProbeNative.h3Fetch(host, ip, armEch, imgPath, "https://www.pixiv.net/", caPath)
+                            ProbeNative.h3Fetch(host, ip, armEch, realPath, referer, caPath, "")
                         } catch (t: Throwable) {
                             say("JNI 异常：" + t.message)
                             continue
@@ -291,6 +350,7 @@ class MainActivity : Activity() {
                         say("")
                     }
                 }
+              }
                 say("== 结束 ==")
                 finishRun("probe-run")
             } catch (t: Throwable) {
@@ -439,6 +499,66 @@ class MainActivity : Activity() {
             say("  （20 秒无回报）")
         }
         say("")
+    }
+
+    /** colo 对照：同一 zone 的 /cdn-cgi/trace，H3(quiche) 与 TCP 各取 2 次，比 colo 与延时 */
+    private fun runColoTraceArm() {
+        say("===== colo 对照（/cdn-cgi/trace，同一 zone）=====")
+        say("载体 : " + carrier())
+        val gwHost = BuildConfig.DOH_URL.substringAfter("https://").substringBefore("/")
+        say("目标 : $gwHost/cdn-cgi/trace")
+        val gwIp = try {
+            resolveViaGateway(gwHost).first
+        } catch (e: Exception) {
+            say("解析失败: " + e.message)
+            return
+        }
+        val caPath = try {
+            exportSystemCas()
+        } catch (_: Exception) {
+            ""
+        }
+
+        say("---- H3（quiche）----")
+        for (i in 1..2) {
+            val f = File(cacheDir, "trace-h3-$i.txt")
+            val t0 = System.currentTimeMillis()
+            val json = runCatching {
+                ProbeNative.h3Fetch(gwHost, gwIp, "", "/cdn-cgi/trace", "", caPath, f.absolutePath)
+            }.getOrNull()
+            val wall = System.currentTimeMillis() - t0
+            val o = json?.let { runCatching { JSONObject(it) }.getOrNull() }
+            val body = if (f.exists()) f.readText() else ""
+            say("  第 $i 次 status=" + (o?.optInt("status") ?: -1) + " 握手=" + (o?.optLong("hs_ms") ?: -1) +
+                    "ms 总=" + (o?.optLong("total_ms") ?: -1) + "ms 墙钟=" + wall + "ms")
+            say("    " + traceSummary(body))
+            f.delete()
+        }
+
+        say("---- TCP（HttpURLConnection）----")
+        for (i in 1..2) {
+            val t0 = System.currentTimeMillis()
+            val body = runCatching {
+                val c = (URL("https://$gwHost/cdn-cgi/trace").openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 8000
+                    readTimeout = 12000
+                }
+                val text = c.inputStream.bufferedReader().use { it.readText() }
+                c.disconnect()
+                text
+            }.getOrElse { "ERR " + it.message }
+            say("  第 $i 次 墙钟=" + (System.currentTimeMillis() - t0) + "ms")
+            say("    " + traceSummary(body))
+        }
+        say("")
+    }
+
+    /** 从 trace 里挑关键信息：落到哪个边缘、走的什么协议、SNI 是否加密 */
+    private fun traceSummary(body: String): String {
+        if (body.startsWith("ERR")) return body
+        val want = listOf("ip=", "colo=", "loc=", "http=", "sni=", "tls=", "kex=")
+        val picked = body.lines().filter { line -> want.any { line.startsWith(it) } }
+        return if (picked.isEmpty()) "(无 trace 内容)" else picked.joinToString("  ")
     }
 
     /** DoH：拿 A 记录的 IP 和 HTTPS 记录里的 ech= */
