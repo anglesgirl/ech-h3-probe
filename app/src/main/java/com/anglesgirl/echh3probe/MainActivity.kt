@@ -343,7 +343,16 @@ class MainActivity : Activity() {
                     finishRun("probe-run")
                     return@thread
                 }
+                // App 的实际策略：ECH 不用目标域自己的记录，而取 CF 官方 cloudflare-ech.com 的活值（经自有网关查），
+                // 再注入到目标域。这样目标域记录过期/被拒也能连上（App 里就是这么做的）。
+                val officialEch = try {
+                    resolveViaGateway("cloudflare-ech.com").second
+                } catch (e: Exception) {
+                    say("[ECH ] cloudflare-ech.com 活值获取失败：" + e.message)
+                    ""
+                }
                 say("[模式] 强制 H3：不依赖 Alt-Svc，直接起 QUIC/H3")
+                say("[ECH ] CF 官方活值：" + (if (officialEch.isEmpty()) "获取失败 ✗" else officialEch.length.toString() + " 字符 ✓"))
                 sources.forEach { (label, ip) -> say("[地址] $label → $ip") }
                 say("[ECH ] $echFrom：" + (if (echB64.isEmpty()) "无（将走明文 SNI）✗" else echB64.length.toString() + " 字符 ✓"))
                 say("")
@@ -357,7 +366,15 @@ class MainActivity : Activity() {
               for ((srcLabel, ip) in sources) {
                 say("########## 来源：$srcLabel（$ip）##########")
                 // 关键对照：带 ECH 与 不带 ECH（明文 SNI）
-                val arms = listOf("带 ECH" to echB64, "无 ECH（明文 SNI）" to "")
+                // 三组对照：目标域自带 / CF 官方活值（＝App 策略）/ 明文 SNI
+                val arms = ArrayList<Pair<String, String>>()
+                if (echB64.isNotEmpty()) {
+                    arms += (if (manualEch.isNotEmpty()) "带 ECH（手动注入）" else "带 ECH（目标域自带）") to echB64
+                }
+                if (officialEch.isNotEmpty()) {
+                    arms += "带 ECH（CF 官方活值＝App 策略）" to officialEch
+                }
+                arms += "无 ECH（明文 SNI）" to ""
                 for ((armName, armEch) in arms) {
                     say("===== [$srcLabel] $armName =====")
                     var okCount = 0
@@ -410,6 +427,15 @@ class MainActivity : Activity() {
                 say("域名：" + host)
                 say("ECH ：" + echFrom + "（" + (if (echB64.isEmpty()) "无 → 走明文 SNI" else echB64.length.toString() + " 字符") + "）")
                 verdicts.forEach { say(it) }
+                // 单独给一条"App 实际链路"的判定：自有网关 IP + CF 官方活值 ECH + 主动 H3 —— 这才是 App 会走的组合
+                val appVerdict = verdicts.firstOrNull { it.contains("App 策略") }
+                say(
+                    when {
+                        appVerdict == null -> "App 策略判定：未取到 CF 官方活值，无法评估 ✗"
+                        appVerdict.startsWith("✓") -> "App 策略判定（网关 IP + CF 官方活值 + 主动 H3）：本域名【可用】✓"
+                        else -> "App 策略判定（网关 IP + CF 官方活值 + 主动 H3）：本域名【不可用】✗"
+                    }
+                )
                 say(
                     if (verdicts.any { it.startsWith("✓") })
                         "判定：以上覆盖到的路径里有【支持 H3】的组合，可考虑启用 H3。"
