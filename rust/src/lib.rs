@@ -4,6 +4,8 @@
 //! `tools/patch_quiche.py` 把入口暴露出来（`Config::set_ech_config_list`）。
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+
+pub mod tls_ech;
 use std::time::{Duration, Instant};
 
 use quiche::h3::{Config as H3Config, Connection as H3Connection, Header, NameValue};
@@ -33,10 +35,22 @@ pub struct H3Outcome {
 impl H3Outcome {
     fn err(msg: String) -> Self {
         H3Outcome {
-            hs_ms: 0, established: false, alpn: String::new(), ech_override: None,
-            ech_retry_len: 0, status: 0, first_byte_ms: 0, total_ms: 0, body_len: 0, body: Vec::new(),
-            cf_ray: String::new(), server: String::new(), error: Some(msg),
-            sent: 0, recv: 0, peer_err: String::new(),
+            hs_ms: 0,
+            established: false,
+            alpn: String::new(),
+            ech_override: None,
+            ech_retry_len: 0,
+            status: 0,
+            first_byte_ms: 0,
+            total_ms: 0,
+            body_len: 0,
+            body: Vec::new(),
+            cf_ray: String::new(),
+            server: String::new(),
+            error: Some(msg),
+            sent: 0,
+            recv: 0,
+            peer_err: String::new(),
         }
     }
 }
@@ -137,7 +151,10 @@ pub fn h3_fetch(
         match socket.recv_from(&mut buf) {
             Ok((len, from)) => {
                 recv += 1;
-                let info = quiche::RecvInfo { from, to: local_addr };
+                let info = quiche::RecvInfo {
+                    from,
+                    to: local_addr,
+                };
                 if let Err(e) = conn.recv(&mut buf[..len], info) {
                     hs_err = Some(format!("QUIC recv 出错: {:?}", e));
                     break;
@@ -160,7 +177,10 @@ pub fn h3_fetch(
         o.hs_ms = hs_ms;
         o.sent = sent;
         o.recv = recv;
-        o.peer_err = conn.peer_error().map(|e| format!("{:?}", e)).unwrap_or_default();
+        o.peer_err = conn
+            .peer_error()
+            .map(|e| format!("{:?}", e))
+            .unwrap_or_default();
         return o;
     }
 
@@ -288,7 +308,10 @@ pub fn h3_fetch(
         match socket.recv_from(&mut buf) {
             Ok((len, from)) => {
                 recv += 1;
-                let info = quiche::RecvInfo { from, to: local_addr };
+                let info = quiche::RecvInfo {
+                    from,
+                    to: local_addr,
+                };
                 let _ = conn.recv(&mut buf[..len], info);
             }
             Err(_) => {}
@@ -312,7 +335,10 @@ pub fn h3_fetch(
         error: None,
         sent,
         recv,
-        peer_err: conn.peer_error().map(|e| format!("{:?}", e)).unwrap_or_default(),
+        peer_err: conn
+            .peer_error()
+            .map(|e| format!("{:?}", e))
+            .unwrap_or_default(),
     }
 }
 
@@ -416,8 +442,16 @@ mod android_jni {
             &peer_ip,
             ech.as_deref(),
             if path.is_empty() { "/" } else { &path },
-            if referer.is_empty() { None } else { Some(&referer) },
-            if ca_path.is_empty() { "/system/etc/security/cacerts" } else { &ca_path },
+            if referer.is_empty() {
+                None
+            } else {
+                Some(&referer)
+            },
+            if ca_path.is_empty() {
+                "/system/etc/security/cacerts"
+            } else {
+                &ca_path
+            },
             Duration::from_secs(8),
             Duration::from_secs(25),
         );
@@ -431,9 +465,59 @@ mod android_jni {
         }
         let mut json = outcome.to_json();
         if !saved.is_empty() {
-            json = json.trim_end_matches('}').to_string() + &format!(",\"saved_to\":\"{}\"}}", saved);
+            json =
+                json.trim_end_matches('}').to_string() + &format!(",\"saved_to\":\"{}\"}}", saved);
         }
         let out = env.new_string(json).unwrap();
+        out.into_raw()
+    }
+
+    /// TCP + TLS1.3 + ECH（给不支持 H3 的站点用，典型：research.cloudflare.com）。
+    /// 空 ech_b64 = 明文 SNI 对照臂。
+    #[no_mangle]
+    pub extern "system" fn Java_com_anglesgirl_echh3probe_ProbeNative_tlsEchFetch(
+        mut env: JNIEnv,
+        _class: JClass,
+        host: JString,
+        peer_ip: JString,
+        ech_b64: JString,
+        path: JString,
+        ca_path: JString,
+    ) -> jstring {
+        let host = jstr(&mut env, host);
+        let peer_ip = jstr(&mut env, peer_ip);
+        let ech_b64 = jstr(&mut env, ech_b64);
+        let path = jstr(&mut env, path);
+        let ca_path = jstr(&mut env, ca_path);
+
+        let ech: Option<Vec<u8>> = if ech_b64.is_empty() {
+            None
+        } else {
+            match base64_decode(&ech_b64) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    let out = env
+                        .new_string(format!("{{\"ok\":false,\"error\":\"ECH base64 解码失败: {}\"}}", e))
+                        .unwrap();
+                    return out.into_raw();
+                }
+            }
+        };
+
+        let outcome = crate::tls_ech::tls_ech_fetch(
+            &host,
+            &peer_ip,
+            ech.as_deref(),
+            if path.is_empty() { "/cdn-cgi/trace" } else { &path },
+            if ca_path.is_empty() {
+                "/system/etc/security/cacerts"
+            } else {
+                &ca_path
+            },
+            Duration::from_secs(8),
+            Duration::from_secs(12),
+        );
+        let out = env.new_string(outcome.to_json()).unwrap();
         out.into_raw()
     }
 

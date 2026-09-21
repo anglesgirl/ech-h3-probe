@@ -21,4 +21,19 @@ object ProbeNative {
         caPath: String,
         outFile: String,
     ): String
+
+    /**
+     * TCP + TLS1.3 + ECH（供不支持 H3 的站点使用，典型：research.cloudflare.com）。
+     * 与 h3Fetch 共用同一份 BoringSSL（quiche vendored），不是两套 TLS 栈。
+     *
+     * @param echB64  ECHConfigList 的 base64（空串 = 不带 ECH，走明文 SNI）
+     * @return JSON：ok/hs_ms/established/tls_version/alpn/ech_override/ech_retry_len/status/total_ms/body_len/body/error
+     */
+    external fun tlsEchFetch(
+        host: String,
+        peerIp: String,
+        echB64: String,
+        path: String,
+        caPath: String,
+    ): String
 }

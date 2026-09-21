@@ -61,6 +61,8 @@ jobs:
             echo "--- $abi 符号校验"
             $NM -D ../app/src/main/jniLibs/$abi/libech_h3_probe.so | grep -c "Java_com_anglesgirl_echh3probe_ProbeNative_h3Fetch" \
               || { echo "✗ JNI 符号缺失"; exit 1; }
+            $NM -D ../app/src/main/jniLibs/$abi/libech_h3_probe.so | grep -c "Java_com_anglesgirl_echh3probe_ProbeNative_tlsEchFetch" \
+              || { echo "✗ tlsEchFetch 符号缺失"; exit 1; }
           done
 
       - name: 注入固定签名（否则每轮签名不同，用户无法覆盖安装）

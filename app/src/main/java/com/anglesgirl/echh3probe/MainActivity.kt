@@ -55,6 +55,10 @@ class MainActivity : Activity() {
     private lateinit var root: LinearLayout
     private val log = StringBuilder()
     private var wv: WebView? = null
+    private lateinit var btnNet: Button
+    private lateinit var verdict: TextView
+    private lateinit var advancedBox: LinearLayout
+    private lateinit var btnAdv: Button
 
     private val imgPath =
         "/c/1200x1200_80_webp/img-master/img/2026/09/17/22/57/33/149781675_p0_master1200.jpg"
@@ -94,15 +98,46 @@ class MainActivity : Activity() {
         bar.addView(btn)
         bar.addView(btnWv)
         bar.addView(btnAlt)
-        // 按钮行必须显式 MATCH_PARENT：否则父行按 wrap_content 测量，
-        // 里面 width=0 + weight=1 的按钮会被算成 0 宽（实测按钮完全不可见）。
-        root.addView(bar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        // ---- 主入口：一键体检（本机当前网络是否支持 ECH / H3）----
+        btnNet = Button(this).apply {
+            text = "检测本机网络（ECH / H3）"
+            textSize = 16f
+        }
+        root.addView(
+            btnNet,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT),
+        )
+        verdict = TextView(this).apply {
+            textSize = 14f
+            setPadding(28, 20, 28, 20)
+        }
+        root.addView(
+            verdict,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT),
+        )
+        // 高级区：默认收起（主界面只留「一键体检」+ 结论），点「高级对照」才展开。
         // 目标域名可编辑：H3 是否可用因域而异，探针必须能测任意站点。
+        advancedBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = ViewGroup.GONE
+        }
+        btnAdv = Button(this).apply {
+            text = "高级：对照测试（指定域名 / IP / ECH 注入）"
+            textSize = 11f
+        }
+        root.addView(
+            btnAdv,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT),
+        )
+        root.addView(
+            advancedBox,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT),
+        )
         hostInput = EditText(this).apply {
             hint = "目标域名，如 api.bgm.tv"
             setText("i.pximg.net")
         }
-        root.addView(
+        advancedBox.addView(
             hostInput,
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT),
         )
@@ -118,7 +153,7 @@ class MainActivity : Activity() {
             })
         }
         // 预设行同样必须 MATCH_PARENT：父行 wrap_content 时 width=0+weight=1 的子按钮会被算成 0 宽
-        root.addView(
+        advancedBox.addView(
             presets,
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT),
         )
@@ -127,7 +162,7 @@ class MainActivity : Activity() {
             hint = "指定 IP（留空=自动；可填多个，逗号分隔）"
             textSize = 12f
         }
-        root.addView(
+        advancedBox.addView(
             ipInput,
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT),
         )
@@ -136,10 +171,14 @@ class MainActivity : Activity() {
             hint = "强制注入 ECH（base64，留空=用 DoH 的 ech=）"
             textSize = 10f
         }
-        root.addView(
+        advancedBox.addView(
             echInput,
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT),
         )
+        // 详细探针按钮行放到输入框下面：主界面留给「一键体检」。
+        // 按钮行必须显式 MATCH_PARENT：否则父行按 wrap_content 测量，
+        // 里面 width=0 + weight=1 的按钮会被算成 0 宽（实测按钮完全不可见）。
+        advancedBox.addView(bar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         out = TextView(this).apply { textSize = 12f; setPadding(24, 24, 24, 24) }
         root.addView(
             ScrollView(this).apply { addView(out) },
@@ -155,10 +194,16 @@ class MainActivity : Activity() {
             }
             out.text = log.toString()
         } else {
-            // 首次打开自动跑一遍
-            btn.post { runTests() }
+            // 首次打开自动跑一遍体检（用户最关心的就是这两个结论）
+            btnNet.post { runNetworkCheck() }
         }
+        val vf = File(filesDir, "last-verdict.txt")
+        if (vf.exists()) ui { verdict.text = vf.readText() }
 
+        btnNet.setOnClickListener { runNetworkCheck() }
+        btnAdv.setOnClickListener {
+            advancedBox.visibility = if (advancedBox.visibility == ViewGroup.GONE) ViewGroup.VISIBLE else ViewGroup.GONE
+        }
         btn.setOnClickListener { runTests() }
         btnWv.setOnClickListener { runWebViewArm() }
         btnColo = Button(this).apply {
@@ -283,6 +328,273 @@ class MainActivity : Activity() {
             } catch (_: Throwable) {
             }
             prev?.uncaughtException(t, e)
+        }
+    }
+
+    // ---------------- 主入口：本机网络能力体检（ECH / H3） ----------------
+
+    /**
+     * 只回答两个问题（结论直接写在 verdict 卡上，不用从日志里扒）：
+     *  1) 本机当前网络能不能走 ECH —— 判据域 research.cloudflare.com（CF 自家 ECH 站点，自带 ech=，
+     *     只支持 TCP 不支持 H3），看 /cdn-cgi/trace 的 sni 字段：
+     *       sni=encrypted → ECH 真的被服务端解开；sni=plaintext → 没生效（等于不支持）。
+     *     另跑一遍明文 SNI 作基线，用来区分"ECH 被针对"和"到 CF 的路本身就不通"。
+     *  2) 本机当前网络能不能走 H3 —— 判据域 fbi.gov（支持 H3、无 ech=），强制 QUIC/H3
+     *     （不依赖 Alt-Svc、绝不回落 TCP），拿到任何 HTTP 响应就算 H3 可用，再看 trace 的 http=http/3。
+     *     附 TCP 对照，用来区分"UDP/443 被封"和"站点不给 H3"。
+     */
+    private class TlsArm(val ok: Boolean, val sni: String, val http: String, val hs: Long, val err: String)
+    private class H3Arm(val ok: Boolean, val http: String, val hs: Long, val err: String)
+
+    private fun traceField(body: String, key: String): String =
+        body.lineSequence().firstOrNull { it.startsWith("$key=") }?.substringAfter("=")?.trim().orEmpty()
+
+    private fun traceSummary2(body: String): String {
+        if (body.isBlank()) return "(空)"
+        val want = listOf("h=", "colo=", "http=", "sni=", "tls=")
+        return body.lines().filter { l -> want.any { l.startsWith(it) } }.joinToString("  ")
+    }
+
+    /** 当前接入方式（WiFi / 蜂窝） */
+    private fun netType(): String = try {
+        val cm = getSystemService(CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+        val n = cm.activeNetwork
+        val caps = if (n != null) cm.getNetworkCapabilities(n) else null
+        when {
+            caps == null -> "未知"
+            caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) -> "WiFi"
+            caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) -> "蜂窝"
+            caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET) -> "有线"
+            else -> "其他"
+        }
+    } catch (e: Exception) {
+        "未知"
+    }
+
+    /** TCP + TLS1.3（echB64 为空 = 明文 SNI 对照臂），取一次 /cdn-cgi/trace */
+    private fun probeTls(host: String, ip: String, echB64: String, caPath: String, label: String): TlsArm {
+        say("  · $label")
+        val t0 = System.currentTimeMillis()
+        val json = try {
+            ProbeNative.tlsEchFetch(host, ip, echB64, "/cdn-cgi/trace", caPath)
+        } catch (t: Throwable) {
+            say("    JNI 异常：" + t.message)
+            return TlsArm(false, "", "", 0, "JNI 异常：" + t.message)
+        }
+        val wall = System.currentTimeMillis() - t0
+        val o = try {
+            JSONObject(json)
+        } catch (t: Throwable) {
+            return TlsArm(false, "", "", 0, "结果解析失败")
+        }
+        val err = o.optString("error", "")
+        val hasErr = err.isNotEmpty() && err != "null"
+        val body = o.optString("body", "")
+        val sni = traceField(body, "sni")
+        val http = traceField(body, "http")
+        val hs = o.optLong("hs_ms")
+        val ok = !hasErr && o.optInt("status") == 200
+        say("    握手=${hs}ms tls=${o.optString("tls_version")} status=${o.optInt("status")} 墙钟=${wall}ms")
+        say("    trace: " + traceSummary2(body))
+        if (hasErr) say("    错误: " + err)
+        return TlsArm(ok, sni, http, hs, if (hasErr) err else "")
+    }
+
+    /** 强制 QUIC/H3 取一次 /cdn-cgi/trace（拿到响应即握手成功） */
+    private fun probeH3(host: String, ip: String, caPath: String, label: String): H3Arm {
+        say("  · $label")
+        val f = File(cacheDir, "netcheck-trace-h3.txt")
+        if (f.exists()) f.delete()
+        val json = try {
+            ProbeNative.h3Fetch(host, ip, "", "/cdn-cgi/trace", "https://$host/", caPath, f.absolutePath)
+        } catch (t: Throwable) {
+            say("    JNI 异常：" + t.message)
+            return H3Arm(false, "", 0, "JNI 异常：" + t.message)
+        }
+        val o = try {
+            JSONObject(json)
+        } catch (t: Throwable) {
+            return H3Arm(false, "", 0, "结果解析失败")
+        }
+        val err = o.optString("error", "")
+        val hasErr = err.isNotEmpty() && err != "null"
+        val body = if (f.exists()) f.readText() else ""
+        f.delete()
+        val http = traceField(body, "http")
+        val hs = o.optLong("hs_ms")
+        val status = o.optInt("status")
+        // 判定口径：拿到任何 HTTP 响应（哪怕 403/404）都算 H3 可用；只有握手被断/超时才算不可用。
+        val ok = !hasErr && status > 0
+        say("    握手=${hs}ms status=$status 总=${o.optLong("total_ms")}ms sent=${o.optLong("sent")} recv=${o.optLong("recv")}")
+        say("    trace: " + traceSummary2(body))
+        if (hasErr) say("    错误: " + err)
+        return H3Arm(ok, http, hs, if (hasErr) err else "")
+    }
+
+    /** TCP 对照（系统 TLS 栈，只用来证明"TCP 通、UDP 不通"） */
+    private fun tcpProbe(host: String): String = try {
+        val c = (URL("https://$host/cdn-cgi/trace").openConnection() as HttpURLConnection).apply {
+            connectTimeout = 8000
+            readTimeout = 10000
+        }
+        val t = c.inputStream.bufferedReader().use { it.readText() }
+        c.disconnect()
+        t
+    } catch (e: Exception) {
+        "ERR " + e.message
+    }
+
+    private fun runNetworkCheck() {
+        btnNet.isEnabled = false
+        synchronized(log) { log.setLength(0) }
+        ui { verdict.text = "检测中…（约 10 秒，别切后台）" }
+        thread {
+            try {
+                val echHost = ECH_JUDGE_HOST
+                val h3Host = H3_JUDGE_HOST
+                say("== 本机网络能力检测（ECH / H3）==")
+                say("时间 : " + SimpleDateFormat("MM-dd HH:mm:ss", Locale.CHINA).format(Date()))
+                say("载体 : " + carrier())
+                say("接入 : " + netType())
+                say("网关 : " + BuildConfig.DOH_URL)
+                say("版本 : " + BuildConfig.VERSION_NAME)
+                say("")
+
+                val caPath = try {
+                    exportSystemCas()
+                } catch (e: Exception) {
+                    say("[CA] 导出失败：" + e.message)
+                    ""
+                }
+                if (caPath.isNotEmpty()) say("[CA] 系统证书已导出（" + File(caPath).length() + " 字节）")
+
+                // ---- 1) 解析两个判据域 ----
+                val echRes = try {
+                    resolveViaGateway(echHost)
+                } catch (e: Exception) {
+                    say("[DoH] $echHost 解析失败：" + e.message)
+                    null
+                }
+                val h3Res = try {
+                    resolveViaGateway(h3Host)
+                } catch (e: Exception) {
+                    say("[DoH] $h3Host 解析失败：" + e.message)
+                    null
+                }
+                val echIp = echRes?.first.orEmpty()
+                val echB64 = echRes?.second.orEmpty()
+                val h3Ip = h3Res?.first.orEmpty()
+                say(
+                    "判据域 A（ECH）：$echHost → " +
+                        (if (echIp.isEmpty()) "解析失败 ✗" else "$echIp｜ech= " +
+                            (if (echB64.isEmpty()) "缺失 ✗" else echB64.length.toString() + " 字符 ✓"))
+                )
+                say("判据域 B（H3 ）：$h3Host → " + (if (h3Ip.isEmpty()) "解析失败 ✗" else h3Ip))
+                say("")
+
+                // ---- 2) ECH ----
+                say("---- ECH 检测：$echHost（自带 ech=，仅 TCP）----")
+                val base = if (echIp.isNotEmpty()) {
+                    probeTls(echHost, echIp, "", caPath, "基线：明文 SNI（无 ECH）")
+                } else {
+                    TlsArm(false, "", "", 0, "无可用地址")
+                }
+                val arms = mutableListOf<TlsArm>()
+                if (echIp.isNotEmpty() && echB64.isNotEmpty()) {
+                    for (i in 1..2) arms += probeTls(echHost, echIp, echB64, caPath, "带 ECH 第 $i 次")
+                }
+                val encCount = arms.count { it.sni == "encrypted" }
+                val encOk = arms.count { it.ok && it.sni == "encrypted" }
+                val plainOk = arms.count { it.ok && it.sni == "plaintext" }
+                val echo = when {
+                    echIp.isEmpty() || echB64.isEmpty() ->
+                        Triple("?", "无法判定", "判据域不可用（拿不到地址或 ech= 记录），无法发起 ECH")
+                    encOk > 0 ->
+                        Triple(
+                            "✓", "支持",
+                            "ECH 真正生效：sni=encrypted（$encCount/${arms.size} 次，握手 " +
+                                arms.first { it.ok && it.sni == "encrypted" }.hs + "ms）"
+                        )
+                    plainOk > 0 ->
+                        Triple("✗", "不支持", "带 ECH 握手成功，但服务端只看到明文 SNI（sni=plaintext）→ ECH 未被解密")
+                    !base.ok ->
+                        Triple("✗", "不支持", "到该判据域的 TCP/TLS 本身不通（" + base.err.take(50) + "）→ 网络层面阻断")
+                    else ->
+                        Triple(
+                            "✗", "不支持",
+                            "带 ECH 握手被阻断（" + (arms.lastOrNull()?.err ?: "").take(50) + "），而明文 SNI 基线正常 → 针对性阻断"
+                        )
+                }
+                val echMark = echo.first
+                val echWord = echo.second
+                val echWhy = echo.third
+                say("")
+
+                // ---- 3) H3 ----
+                say("---- H3 检测：$h3Host（支持 H3、无 ech=）----")
+                val h3Arms = mutableListOf<H3Arm>()
+                if (h3Ip.isNotEmpty()) {
+                    for (i in 1..2) h3Arms += probeH3(h3Host, h3Ip, caPath, "强制 H3 第 $i 次")
+                }
+                val tcpBody = tcpProbe(h3Host)
+                say("  · TCP 对照： " + traceSummary2(tcpBody))
+                val h3Good = h3Arms.count { it.ok && it.http == "http/3" }
+                val h3Resp = h3Arms.count { it.ok }
+                val h3vo = when {
+                    h3Ip.isEmpty() ->
+                        Triple("?", "无法判定", "判据域解析不到地址")
+                    h3Good > 0 ->
+                        Triple(
+                            "✓", "支持",
+                            "H3 可用：拿到 http/3 响应（$h3Good/${h3Arms.size} 次，握手 " +
+                                h3Arms.first { it.ok }.hs + "ms）"
+                        )
+                    h3Resp > 0 ->
+                        Triple("?", "无法判定", "H3 握手成功但 trace 未报 http/3（响应异常）")
+                    else ->
+                        Triple(
+                            "✗", "不支持",
+                            "H3 不可用：" + (h3Arms.lastOrNull()?.err ?: "握手失败").take(60) +
+                                (if (tcpBody.startsWith("ERR")) "；TCP 对照也不通 → 整体网络到不了该域"
+                                else "；TCP 对照正常 → 多为 UDP/443 被阻断或限速")
+                        )
+                }
+                val h3Mark = h3vo.first
+                val h3Word = h3vo.second
+                val h3Why = h3vo.third
+
+                // ---- 4) 结论 ----
+                val sb = StringBuilder()
+                sb.append("检测时间 ").append(SimpleDateFormat("MM-dd HH:mm", Locale.CHINA).format(Date())).append('\n')
+                sb.append("接入 ").append(netType()).append(" · ").append(carrier().substringBefore(" 卡=")).append("\n")
+                sb.append('\n')
+                sb.append("ECH  ").append(echMark).append(' ').append(echWord).append('\n')
+                sb.append("      ").append(echWhy).append('\n')
+                sb.append('\n')
+                sb.append("H3   ").append(h3Mark).append(' ').append(h3Word).append('\n')
+                sb.append("      ").append(h3Why).append('\n')
+                sb.append('\n')
+                sb.append(
+                    when {
+                        echMark == "✓" && h3Mark == "✓" -> "结论：当前网络可走 ECH + H3（两条都能用）"
+                        echMark == "✓" -> "结论：当前网络可走 ECH，H3 不可用（走 TCP+ECH）"
+                        h3Mark == "✓" -> "结论：当前网络 H3 可用，ECH 不可用（H3 下 SNI 仍可能暴露）"
+                        else -> "结论：当前网络 ECH / H3 都不可用"
+                    }
+                )
+                val text = sb.toString()
+                ui { verdict.text = text }
+                File(filesDir, "last-verdict.txt").writeText(text)
+                say("")
+                say("============= 结论汇总 =============")
+                say(text)
+                say("===================================")
+                say("== 结束 ==")
+                finishRun("net-check")
+            } catch (t: Throwable) {
+                say("检测异常：" + t)
+                finishRun("net-check-error")
+            }
         }
     }
 
@@ -455,7 +767,7 @@ class MainActivity : Activity() {
     private fun finishRun(event: String) {
         persistLog()
         upload(event, mapOf("log" to currentLog(), "gateway" to BuildConfig.DOH_URL))
-        ui { btn.isEnabled = true; btnWv.isEnabled = true }
+        ui { btn.isEnabled = true; btnWv.isEnabled = true; btnNet.isEnabled = true }
     }
 
     // ---------------- 第二组：WebView 直开 ----------------
@@ -504,7 +816,7 @@ class MainActivity : Activity() {
                         afterWv()
                     }
                 }
-                root.addView(w, 2)
+                root.addView(w)
                 wv = w
                 w
             }
@@ -526,7 +838,7 @@ class MainActivity : Activity() {
     private fun afterWv() {
         persistLog()
         upload("webview-arm", mapOf("log" to currentLog()))
-        ui { btn.isEnabled = true; btnWv.isEnabled = true }
+        ui { btn.isEnabled = true; btnWv.isEnabled = true; btnNet.isEnabled = true }
     }
 
     // ---------------- DoH / CA ----------------
@@ -703,5 +1015,9 @@ class MainActivity : Activity() {
 
     private companion object {
         const val ENDPOINT = "https://log.anglesgirl.eu.org/v1/events"
+        /** ECH 判据域：CF 自家站点，自带 ech= 记录，只支持 TCP（实测 H3 握手被拒 no_application_protocol） */
+        const val ECH_JUDGE_HOST = "research.cloudflare.com"
+        /** H3 判据域：支持 H3，无 ech= 记录（ECH 与 H3 分开测，互不干扰） */
+        const val H3_JUDGE_HOST = "fbi.gov"
     }
 }
