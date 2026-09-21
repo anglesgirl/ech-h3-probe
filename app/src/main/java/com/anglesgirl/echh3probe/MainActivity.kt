@@ -56,6 +56,7 @@ class MainActivity : Activity() {
     private val log = StringBuilder()
     private var wv: WebView? = null
     private lateinit var btnNet: Button
+    private lateinit var btnTcp: Button
     private lateinit var verdict: TextView
     private lateinit var advancedBox: LinearLayout
     private lateinit var btnAdv: Button
@@ -219,6 +220,7 @@ class MainActivity : Activity() {
         if (vf.exists()) ui { verdict.text = vf.readText() }
 
         btnNet.setOnClickListener { runNetworkCheck() }
+        btnTcp.setOnClickListener { runTcpCompare() }
         btnAdv.setOnClickListener {
             advancedBox.visibility = if (advancedBox.visibility == ViewGroup.GONE) ViewGroup.VISIBLE else ViewGroup.GONE
         }
@@ -346,6 +348,88 @@ class MainActivity : Activity() {
             } catch (_: Throwable) {
             }
             prev?.uncaughtException(t, e)
+        }
+    }
+
+    // ---------------- TCP 层对照：区分「SNI 阻断」与「IP 层阻断」 ----------------
+
+    private class TcpGroup(val label: String, val ip: String, val plain: TlsArm, val echArm: TlsArm?)
+
+    /**
+     * 探针原有的「原生测试」只跑 QUIC/H3 —— 对不支持 H3 的域名（hanime1.me 就是）等于没测。
+     * 这里补 TCP 层对照：同一域名 × {网关 DoH IP, 系统 DNS IP} × {明文 SNI, 带 ECH}，
+     * 用「明文通不通 ↔ 带 ECH 通不通」把两类阻断分开：
+     *   明文不通 + ECH 通  → SNI 识别阻断（ECH 能救）
+     *   明文不通 + ECH 不通 → IP 层阻断（ECH 救不了，只能换 IP）
+     */
+    private fun runTcpCompare() {
+        btnTcp.isEnabled = false
+        synchronized(log) { log.setLength(0) }
+        ui { verdict.text = "TCP 层对照测试中…（约 20 秒）" }
+        thread {
+            try {
+                val host = hostInput.text.toString().trim().ifEmpty { "hanime1.me" }
+                val manualEch = echInput.text.toString().trim()
+                say("===== TCP 层对照（不走 QUIC）=====")
+                say("域名: $host")
+                say("口径: 拿到 200 + trace = 通；sni=encrypted = ECH 真生效")
+                say("目的: 明文通不通 ↔ 带 ECH 通不通 → 区分 SNI 阻断 / IP 层阻断")
+                say("")
+                val caPath = try { exportSystemCas() } catch (e: Exception) { say("[CA] 导出失败：" + e.message); "" }
+
+                val gw = try { resolveViaGateway(host) } catch (e: Exception) { say("[DoH] 网关解析失败：" + e.message); null }
+                val sysIps = try {
+                    InetAddress.getAllByName(host).mapNotNull { it.hostAddress }.filter { it.isNotEmpty() }
+                } catch (e: Exception) { say("[系统 DNS] 解析失败：" + e.message); emptyList() }
+
+                val gwIp = gw?.first.orEmpty()
+                val echVal = if (manualEch.isNotEmpty()) manualEch else gw?.second.orEmpty()
+                say("网关 DoH IP : " + gwIp.ifEmpty { "解析失败 ✗" })
+                say("系统 DNS IP : " + sysIps.joinToString(", ").ifEmpty { "解析失败 ✗" })
+                say("ECH 来源    : " + when {
+                    manualEch.isNotEmpty() -> "手动注入（${manualEch.length} 字符）"
+                    echVal.isNotEmpty() -> "DoH 的 ech=（${echVal.length} 字符）"
+                    else -> "无 —— 该域拿不到 ech=，只能测明文"
+                })
+                say("")
+
+                val groups = mutableListOf<TcpGroup>()
+                for ((label, ip) in listOf("网关 DoH IP" to gwIp, "系统 DNS IP" to sysIps.firstOrNull().orEmpty())) {
+                    if (ip.isEmpty()) { say("---- $label：无可用地址，跳过 ----"); continue }
+                    say("---- $label = $ip ----")
+                    val p = probeTls(host, ip, "", caPath, "明文 SNI（无 ECH）")
+                    val e = if (echVal.isNotEmpty()) probeTls(host, ip, echVal, caPath, "带 ECH") else null
+                    if (e == null) say("    （该域没有 ech=，带 ECH 这臂跳过）")
+                    groups += TcpGroup(label, ip, p, e)
+                    say("")
+                }
+
+                say("======== TCP 层判定 ========")
+                val sb = StringBuilder()
+                for (g in groups) {
+                    val pOk = g.plain.ok
+                    val eOk = g.echArm?.ok == true
+                    val eEnc = g.echArm?.sni == "encrypted"
+                    val v = when {
+                        g.echArm == null -> if (pOk) "✓ 明文可通（该域无 ech= 记录，测不了 ECH）"
+                                            else "✗ 明文也不通：" + g.plain.err.take(60)
+                        pOk && eOk -> "✓ 正常：明文与 ECH 都通" + if (eEnc) "，ECH 真生效" else "（但 sni=plaintext，ECH 没生效）"
+                        !pOk && eOk -> "✓ 典型 SNI 阻断：明文被掐，带 ECH 就通 —— ECH 救回来了"
+                        !pOk && !eOk -> "✗ IP 层阻断：明文和 ECH 都不通 —— ECH 救不了，只能换 IP"
+                        else -> "⚠ 明文通、带 ECH 反而不通（ECH 被针对或 config 失效）"
+                    }
+                    say("  ${g.label}（$host @ ${g.ip}）: $v")
+                    sb.append("${g.label}（${g.ip}）：").append(v).append('\n')
+                }
+                say("===========================")
+                val text = "TCP 层对照 · $host\n" + sb.toString().trim()
+                ui { verdict.text = text }
+                try { File(filesDir, "last-verdict.txt").writeText(text) } catch (_: Throwable) {}
+                finishRun("tcp-compare")
+            } catch (t: Throwable) {
+                say("[异常] " + t.message)
+                finishRun("tcp-compare")
+            }
         }
     }
 
@@ -798,7 +882,7 @@ class MainActivity : Activity() {
     private fun finishRun(event: String) {
         persistLog()
         upload(event, mapOf("log" to currentLog(), "gateway" to currentDoh()))
-        ui { btn.isEnabled = true; btnWv.isEnabled = true; btnNet.isEnabled = true }
+        ui { btn.isEnabled = true; btnWv.isEnabled = true; btnNet.isEnabled = true; btnTcp.isEnabled = true }
     }
 
     // ---------------- 第二组：WebView 直开 ----------------
