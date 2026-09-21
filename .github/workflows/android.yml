@@ -84,6 +84,14 @@ jobs:
         with:
           gradle-version: "8.9"
 
+      - name: 注入 DoH 网关地址（源码里不留地址，公开仓库才安全）
+        env:
+          ECH_DOH_URL_SECRET: ${{ secrets.ECH_DOH_URL }}
+        run: |
+          if [ -z "${ECH_DOH_URL_SECRET:-}" ]; then echo "::warning::没有 ECH_DOH_URL secret，编出的包不含默认 DoH（需在 App 高级里手填）"; exit 0; fi
+          echo "ECH_DOH_URL=$ECH_DOH_URL_SECRET" >> "$GITHUB_ENV"
+          echo "默认 DoH 已从 secret 注入（长度 ${#ECH_DOH_URL_SECRET}）"
+
       - name: 先只编 Kotlin（语法问题要立刻暴露，不等 NDK）
         run: gradle compileDebugKotlin --no-daemon
 

@@ -7,7 +7,9 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
-val dohUrl = System.getenv("ECH_DOH_URL") ?: "https://YOUR-DOH-HOST.example/dns-query"
+// 公开仓库不留任何网关地址：本地/CI 都从环境变量拿（CI 走 secret），
+// 源码里留空 —— 空值时 App 用「高级」里的 DoH 输入框（用户自己填，存 SharedPreferences）。
+val dohUrl = System.getenv("ECH_DOH_URL").orEmpty()
 
 // CI 注入固定签名。不固定的话每个 runner 都会现生成一个 debug.keystore，
 // 于是每轮构建签名都不同 → 用户无法覆盖安装（实测表现：每次都提示"签名不一致"）。

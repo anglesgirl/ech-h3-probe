@@ -59,6 +59,7 @@ class MainActivity : Activity() {
     private lateinit var verdict: TextView
     private lateinit var advancedBox: LinearLayout
     private lateinit var btnAdv: Button
+    private lateinit var dohInput: EditText
 
     private val imgPath =
         "/c/1200x1200_80_webp/img-master/img/2026/09/17/22/57/33/149781675_p0_master1200.jpg"
@@ -131,6 +132,23 @@ class MainActivity : Activity() {
         )
         root.addView(
             advancedBox,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT),
+        )
+        // DoH 地址：公开仓库不内置网关地址，这里给用户自己填；填过就存下来，重启仍生效。
+        dohInput = EditText(this).apply {
+            hint = "DoH 地址（查 IP 与 ech=，例 https://你的域名/dns-query）"
+            textSize = 10f
+            setText(currentDoh())
+        }
+        dohInput.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) {
+                prefs().edit().putString("doh", s?.toString()?.trim().orEmpty()).apply()
+            }
+        })
+        advancedBox.addView(
+            dohInput,
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT),
         )
         hostInput = EditText(this).apply {
@@ -355,6 +373,16 @@ class MainActivity : Activity() {
         return body.lines().filter { l -> want.any { l.startsWith(it) } }.joinToString("  ")
     }
 
+    private fun prefs() = getSharedPreferences("ech_h3_probe", MODE_PRIVATE)
+
+    /** 默认 DoH 由构建时注入（CI secret）；公开构建为空，留给用户自己填 */
+    private fun builtinDoh(): String = BuildConfig.DOH_URL
+
+    private fun currentDoh(): String {
+        val saved = prefs().getString("doh", "").orEmpty().trim()
+        return if (saved.isNotEmpty()) saved else builtinDoh()
+    }
+
     /** 当前接入方式（WiFi / 蜂窝） */
     private fun netType(): String = try {
         val cm = getSystemService(CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
@@ -456,8 +484,11 @@ class MainActivity : Activity() {
                 say("时间 : " + SimpleDateFormat("MM-dd HH:mm:ss", Locale.CHINA).format(Date()))
                 say("载体 : " + carrier())
                 say("接入 : " + netType())
-                say("网关 : " + BuildConfig.DOH_URL)
+                say("网关 : " + currentDoh())
                 say("版本 : " + BuildConfig.VERSION_NAME)
+                if (currentDoh().isBlank()) {
+                    say("[注意] 没有可用 DoH：ECH 判据拿不到 ech= 记录（展开「高级」填一个也行）")
+                }
                 say("")
 
                 val caPath = try {
@@ -608,7 +639,7 @@ class MainActivity : Activity() {
                 say("== ECH + HTTP/3 探针 ==")
                 say("时间 : " + SimpleDateFormat("MM-dd HH:mm:ss", Locale.CHINA).format(Date()))
                 say("载体 : " + carrier())
-                say("网关 : " + BuildConfig.DOH_URL)
+                say("网关 : " + currentDoh())
                 say("版本 : " + BuildConfig.VERSION_NAME)
                 say("")
 
@@ -766,7 +797,7 @@ class MainActivity : Activity() {
 
     private fun finishRun(event: String) {
         persistLog()
-        upload(event, mapOf("log" to currentLog(), "gateway" to BuildConfig.DOH_URL))
+        upload(event, mapOf("log" to currentLog(), "gateway" to currentDoh()))
         ui { btn.isEnabled = true; btnWv.isEnabled = true; btnNet.isEnabled = true }
     }
 
@@ -909,7 +940,11 @@ class MainActivity : Activity() {
     private fun runColoTraceArm() {
         say("===== colo 对照（/cdn-cgi/trace，同一 zone）=====")
         say("载体 : " + carrier())
-        val gwHost = BuildConfig.DOH_URL.substringAfter("https://").substringBefore("/")
+        if (currentDoh().isBlank()) {
+            say("需要先配置 DoH 地址（展开「高级」填一个再点）")
+            return
+        }
+        val gwHost = currentDoh().substringAfter("https://").substringBefore("/")
         say("目标 : $gwHost/cdn-cgi/trace")
         val gwIp = try {
             resolveViaGateway(gwHost).first
@@ -970,7 +1005,7 @@ class MainActivity : Activity() {
         var ip = ""
         var echB64 = ""
         for (type in listOf("A", "HTTPS")) {
-            val url = URL(BuildConfig.DOH_URL + "?name=" + host + "&type=" + type)
+            val url = URL(currentDoh() + "?name=" + host + "&type=" + type)
             val conn = (url.openConnection() as HttpURLConnection).apply {
                 setRequestProperty("accept", "application/dns-json")
                 connectTimeout = 8000
