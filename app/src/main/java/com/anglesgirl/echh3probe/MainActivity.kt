@@ -198,6 +198,17 @@ class MainActivity : Activity() {
         // 按钮行必须显式 MATCH_PARENT：否则父行按 wrap_content 测量，
         // 里面 width=0 + weight=1 的按钮会被算成 0 宽（实测按钮完全不可见）。
         advancedBox.addView(bar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        // TCP 层对照：原有的「原生测试」只跑 QUIC，对不支持 H3 的域名（hanime1.me 就是）等于没测。
+        // 注意：这一行必须真的插进来——上一次脚本改代码时锚点没匹配、replace 静默跳过，
+        // 只剩 setOnClickListener 引用未初始化的 lateinit，装完直接打不开（实测踩过）。
+        btnTcp = Button(this).apply {
+            text = "TCP 层对照（SNI 阻断 / IP 阻断 判定）"
+            textSize = 12f
+        }
+        advancedBox.addView(
+            btnTcp,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT),
+        )
         out = TextView(this).apply { textSize = 12f; setPadding(24, 24, 24, 24) }
         root.addView(
             ScrollView(this).apply { addView(out) },
@@ -220,7 +231,7 @@ class MainActivity : Activity() {
         if (vf.exists()) ui { verdict.text = vf.readText() }
 
         btnNet.setOnClickListener { runNetworkCheck() }
-        btnTcp.setOnClickListener { runTcpCompare() }
+        if (::btnTcp.isInitialized) btnTcp.setOnClickListener { runTcpCompare() }
         btnAdv.setOnClickListener {
             advancedBox.visibility = if (advancedBox.visibility == ViewGroup.GONE) ViewGroup.VISIBLE else ViewGroup.GONE
         }
@@ -882,7 +893,10 @@ class MainActivity : Activity() {
     private fun finishRun(event: String) {
         persistLog()
         upload(event, mapOf("log" to currentLog(), "gateway" to currentDoh()))
-        ui { btn.isEnabled = true; btnWv.isEnabled = true; btnNet.isEnabled = true; btnTcp.isEnabled = true }
+        ui {
+            btn.isEnabled = true; btnWv.isEnabled = true; btnNet.isEnabled = true
+            if (::btnTcp.isInitialized) btnTcp.isEnabled = true
+        }
     }
 
     // ---------------- 第二组：WebView 直开 ----------------
