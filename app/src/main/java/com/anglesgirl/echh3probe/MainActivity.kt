@@ -21,6 +21,7 @@ import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import java.util.concurrent.Callable
 import java.util.concurrent.ExecutorCompletionService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
@@ -983,12 +984,12 @@ class MainActivity : Activity() {
               val pool = Executors.newFixedThreadPool(4)
               val ecs = ExecutorCompletionService<Pair<Int, ArmResult>>(pool)
               jobs.forEachIndexed { idx, job ->
-                ecs.submit<Pair<Int, ArmResult>> {
+                ecs.submit(Callable<Pair<Int, ArmResult>> {
                     val r = runArm(job, host, realPath, referer, caPath)
                     val d = doneArms.incrementAndGet()
                     ui { progress.text = "高级测试进行中：已完成 $d/$totalArms 臂…" }
                     idx to r
-                }
+                })
               }
               val results = arrayOfNulls<ArmResult>(totalArms)
               try {
