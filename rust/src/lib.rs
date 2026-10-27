@@ -452,7 +452,7 @@ mod android_jni {
             } else {
                 &ca_path
             },
-            Duration::from_secs(8),
+            Duration::from_secs(5),
             Duration::from_secs(25),
         );
 
@@ -514,7 +514,7 @@ mod android_jni {
             } else {
                 &ca_path
             },
-            Duration::from_secs(8),
+            Duration::from_secs(5),
             Duration::from_secs(12),
         );
         let out = env.new_string(outcome.to_json()).unwrap();

@@ -1,10 +1,14 @@
 package com.anglesgirl.echh3probe
 
 import android.app.Activity
+import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.telephony.TelephonyManager
+import android.view.View
 import android.view.ViewGroup
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -13,9 +17,13 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.EditText
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import java.util.concurrent.ExecutorCompletionService
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
 import org.json.JSONObject
 import java.io.BufferedInputStream
 import java.io.File
@@ -61,6 +69,31 @@ class MainActivity : Activity() {
     private lateinit var advancedBox: LinearLayout
     private lateinit var btnAdv: Button
     private lateinit var dohInput: EditText
+    private lateinit var progress: TextView
+
+    // ---------- 界面：深色诊断主题（不再跟系统默认样式走） ----------
+    private val cBg = Color.parseColor("#121212")
+    private val cCard = Color.parseColor("#1E1E1E")
+    private val cStroke = Color.parseColor("#333333")
+    private val cText = Color.parseColor("#E0E0E0")
+    private val cDim = Color.parseColor("#9E9E9E")
+    private val cAccent = Color.parseColor("#1565C0")
+    private val cBtn = Color.parseColor("#2A2A2A")
+
+    private fun dp(v: Int): Int = (v * resources.displayMetrics.density + 0.5f).toInt()
+
+    private fun roundedBg(color: Int, stroke: Int = 0): GradientDrawable =
+        GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = dp(12).toFloat()
+            setColor(color)
+            if (stroke != 0) setStroke(dp(1), stroke)
+        }
+
+    /** 其它测试开跑时，把 WebView 直开残留的页面藏起来（否则一直占着界面底部） */
+    private fun hideWebViews() {
+        ui { wv?.visibility = View.GONE }
+    }
 
     private val imgPath =
         "/c/1200x1200_80_webp/img-master/img/2026/09/17/22/57/33/149781675_p0_master1200.jpg"
@@ -81,20 +114,37 @@ class MainActivity : Activity() {
         root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             fitsSystemWindows = true
+            setBackgroundColor(cBg)
         }
         // 按钮固定吸顶：按钮行横排 + 日志块按权重占满剩余空间，
         // 避免日志太长时把按钮挤出可视区域（用户实测"看不到按钮"）。
         val bar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         btn = Button(this).apply {
             text = "原生测试"
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            textSize = 13f
+            background = roundedBg(cBtn)
+            setTextColor(cText)
+            setPadding(dp(8), dp(10), dp(8), dp(10))
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = dp(6)
+            }
         }
         btnWv = Button(this).apply {
             text = "WebView 直开"
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            textSize = 13f
+            background = roundedBg(cBtn)
+            setTextColor(cText)
+            setPadding(dp(8), dp(10), dp(8), dp(10))
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = dp(6)
+            }
         }
         btnAlt = Button(this).apply {
             text = "Alt-Svc 猜想"
+            textSize = 13f
+            background = roundedBg(cBtn)
+            setTextColor(cText)
+            setPadding(dp(8), dp(10), dp(8), dp(10))
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         }
         bar.addView(btn)
@@ -104,17 +154,37 @@ class MainActivity : Activity() {
         btnNet = Button(this).apply {
             text = "检测本机网络（ECH / H3）"
             textSize = 16f
+            background = roundedBg(cAccent)
+            setTextColor(Color.WHITE)
+            setPadding(dp(16), dp(12), dp(16), dp(12))
         }
         root.addView(
             btnNet,
-            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT),
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(dp(12), dp(12), dp(12), dp(4))
+            },
         )
         verdict = TextView(this).apply {
-            textSize = 14f
-            setPadding(28, 20, 28, 20)
+            textSize = 15f
+            background = roundedBg(cCard, cStroke)
+            setTextColor(cText)
+            setPadding(dp(16), dp(12), dp(16), dp(12))
         }
         root.addView(
             verdict,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(dp(12), dp(8), dp(12), dp(4))
+            },
+        )
+        // 测试进度：高级测试并行跑多臂时，实时显示已完成数（原来全程无反馈，像卡死）
+        progress = TextView(this).apply {
+            textSize = 13f
+            setTextColor(cDim)
+            setPadding(dp(16), dp(4), dp(16), dp(4))
+            visibility = View.GONE
+        }
+        root.addView(
+            progress,
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT),
         )
         // 高级区：默认收起（主界面只留「一键体检」+ 结论），点「高级对照」才展开。
@@ -125,11 +195,16 @@ class MainActivity : Activity() {
         }
         btnAdv = Button(this).apply {
             text = "高级：对照测试（指定域名 / IP / ECH 注入）"
-            textSize = 11f
+            textSize = 13f
+            background = roundedBg(cBtn)
+            setTextColor(cText)
+            setPadding(dp(16), dp(10), dp(16), dp(10))
         }
         root.addView(
             btnAdv,
-            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT),
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(dp(12), dp(8), dp(12), dp(4))
+            },
         )
         root.addView(
             advancedBox,
@@ -138,7 +213,11 @@ class MainActivity : Activity() {
         // DoH 地址：公开仓库不内置网关地址，这里给用户自己填；填过就存下来，重启仍生效。
         dohInput = EditText(this).apply {
             hint = "DoH 地址（查 IP 与 ech=，例 https://你的域名/dns-query）"
-            textSize = 10f
+            textSize = 13f
+            background = roundedBg(cCard, cStroke)
+            setTextColor(cText)
+            setHintTextColor(cDim)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
             setText(currentDoh())
         }
         dohInput.addTextChangedListener(object : android.text.TextWatcher {
@@ -150,66 +229,110 @@ class MainActivity : Activity() {
         })
         advancedBox.addView(
             dohInput,
-            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT),
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(dp(12), dp(4), dp(12), dp(4))
+            },
         )
         hostInput = EditText(this).apply {
             hint = "目标域名，如 api.bgm.tv"
+            textSize = 13f
+            background = roundedBg(cCard, cStroke)
+            setTextColor(cText)
+            setHintTextColor(cDim)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
             setText("i.pximg.net")
         }
         advancedBox.addView(
             hostInput,
-            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT),
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(dp(12), dp(4), dp(12), dp(4))
+            },
         )
-        val presets = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        // 预设改横向滑动：原来 6 个按钮挤一行被压到 9sp，字都看不清
+        val presetsRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         listOf("i.pximg.net", "api.bgm.tv", "lain.bgm.tv", "javchu.com", "hanime1.me", "ao3").forEach { label ->
             val presetHost = if (label == "ao3") "archiveofourown.org" else label
-            presets.addView(Button(this).apply {
+            presetsRow.addView(Button(this).apply {
                 text = label
-                textSize = 9f
-                setPadding(0, 0, 0, 0)
-                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                textSize = 12f
+                background = roundedBg(cBtn)
+                setTextColor(cText)
+                setPadding(dp(14), dp(8), dp(14), dp(8))
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                ).apply { marginEnd = dp(8) }
                 setOnClickListener { hostInput.setText(presetHost) }
             })
         }
-        // 预设行同样必须 MATCH_PARENT：父行 wrap_content 时 width=0+weight=1 的子按钮会被算成 0 宽
+        val presetsScroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            addView(presetsRow)
+        }
         advancedBox.addView(
-            presets,
-            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT),
+            presetsScroll,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(dp(12), dp(4), dp(12), dp(4))
+            },
         )
         // 指定 IP：留空 = 自动（自有网关 + 系统 DNS 各测一遍）；填了就只测这些地址（英文逗号分隔）
         ipInput = EditText(this).apply {
             hint = "指定 IP（留空=自动；可填多个，逗号分隔）"
-            textSize = 12f
+            textSize = 13f
+            background = roundedBg(cCard, cStroke)
+            setTextColor(cText)
+            setHintTextColor(cDim)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
         }
         advancedBox.addView(
             ipInput,
-            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT),
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(dp(12), dp(4), dp(12), dp(4))
+            },
         )
         // 强制注入 ECH：留空 = 用 DoH 取到的 ech=；填了就用这一份（base64），可测"官方活值套到别的域名"
         echInput = EditText(this).apply {
             hint = "强制注入 ECH（base64，留空=用 DoH 的 ech=）"
-            textSize = 10f
+            textSize = 13f
+            background = roundedBg(cCard, cStroke)
+            setTextColor(cText)
+            setHintTextColor(cDim)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
         }
         advancedBox.addView(
             echInput,
-            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT),
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(dp(12), dp(4), dp(12), dp(4))
+            },
         )
         // 详细探针按钮行放到输入框下面：主界面留给「一键体检」。
         // 按钮行必须显式 MATCH_PARENT：否则父行按 wrap_content 测量，
         // 里面 width=0 + weight=1 的按钮会被算成 0 宽（实测按钮完全不可见）。
-        advancedBox.addView(bar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        advancedBox.addView(bar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            setMargins(dp(12), dp(4), dp(12), dp(4))
+        })
         // TCP 层对照：原有的「原生测试」只跑 QUIC，对不支持 H3 的域名（hanime1.me 就是）等于没测。
         // 注意：这一行必须真的插进来——上一次脚本改代码时锚点没匹配、replace 静默跳过，
         // 只剩 setOnClickListener 引用未初始化的 lateinit，装完直接打不开（实测踩过）。
         btnTcp = Button(this).apply {
             text = "TCP 层对照（SNI 阻断 / IP 阻断 判定）"
-            textSize = 12f
+            textSize = 13f
+            background = roundedBg(cBtn)
+            setTextColor(cText)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
         }
         advancedBox.addView(
             btnTcp,
-            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT),
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(dp(12), dp(4), dp(12), dp(4))
+            },
         )
-        out = TextView(this).apply { textSize = 12f; setPadding(24, 24, 24, 24) }
+        out = TextView(this).apply {
+            textSize = 12f
+            typeface = Typeface.MONOSPACE
+            background = roundedBg(cCard, cStroke)
+            setTextColor(cText)
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+        }
         root.addView(
             ScrollView(this).apply { addView(out) },
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f),
@@ -239,7 +362,13 @@ class MainActivity : Activity() {
         btnWv.setOnClickListener { runWebViewArm() }
         btnColo = Button(this).apply {
             text = "colo 对照"
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            textSize = 13f
+            background = roundedBg(cBtn)
+            setTextColor(cText)
+            setPadding(dp(8), dp(10), dp(8), dp(10))
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = dp(6)
+            }
         }
         bar.addView(btnColo)
         btnColo.setOnClickListener {
@@ -261,8 +390,29 @@ class MainActivity : Activity() {
 
     /** 线程安全地追加一行：后台线程也敢调（UI 更新切回主线程） */
     private fun say(s: String) {
-        synchronized(log) { log.append(s).append('\n') }
-        runOnUiThread { out.text = synchronized(log) { log.toString() } }
+        var trimmed = false
+        synchronized(log) {
+            log.append(s).append('\n')
+            // 日志封顶：超长时丢掉最旧的部分，避免 TextView 无限增长拖慢 UI
+            if (log.length > 300_000) {
+                val cut = log.indexOf("\n", log.length - 250_000)
+                if (cut > 0) {
+                    log.delete(0, cut + 1)
+                    trimmed = true
+                }
+            }
+        }
+        runOnUiThread {
+            // 追加式更新：原来每行都把整墙文本重设一遍，长日志时越跑越卡
+            if (trimmed) out.text = synchronized(log) { log.toString() } else out.append(s + "\n")
+            (out.parent as? ScrollView)?.post { (out.parent as ScrollView).fullScroll(ScrollView.FOCUS_DOWN) }
+        }
+    }
+
+    /** 开新一轮测试：清空缓冲与屏幕（原来只清缓冲，旧文本会残留在屏幕上） */
+    private fun clearLog() {
+        synchronized(log) { log.setLength(0) }
+        ui { out.text = "" }
     }
 
     private fun currentLog(): String = synchronized(log) { log.toString() }
@@ -366,6 +516,12 @@ class MainActivity : Activity() {
 
     private class TcpGroup(val label: String, val ip: String, val plain: TlsArm, val echArm: TlsArm?)
 
+    /** 高级测试的一条臂：一个来源 × 一种 ECH 策略（并行跑，内部 3 次仍串行） */
+    private class ArmJob(val srcLabel: String, val ip: String, val armName: String, val armEch: String)
+
+    /** 一条臂的完整结果：结论行 + 明细文本（明细先收着，最后按原顺序回放，日志不交错） */
+    private class ArmResult(val verdict: String, val detail: String)
+
     /**
      * 探针原有的「原生测试」只跑 QUIC/H3 —— 对不支持 H3 的域名（hanime1.me 就是）等于没测。
      * 这里补 TCP 层对照：同一域名 × {网关 DoH IP, 系统 DNS IP} × {明文 SNI, 带 ECH}，
@@ -375,7 +531,8 @@ class MainActivity : Activity() {
      */
     private fun runTcpCompare() {
         btnTcp.isEnabled = false
-        synchronized(log) { log.setLength(0) }
+        clearLog()
+        hideWebViews()
         ui { verdict.text = "TCP 层对照测试中…（约 20 秒）" }
         thread {
             try {
@@ -569,7 +726,8 @@ class MainActivity : Activity() {
 
     private fun runNetworkCheck() {
         btnNet.isEnabled = false
-        synchronized(log) { log.setLength(0) }
+        clearLog()
+        hideWebViews()
         ui { verdict.text = "检测中…（约 10 秒，别切后台）" }
         thread {
             try {
@@ -728,7 +886,8 @@ class MainActivity : Activity() {
 
     private fun runTests() {
         btn.isEnabled = false
-        synchronized(log) { log.setLength(0) }
+        clearLog()
+        hideWebViews()
         thread {
             try {
                 say("== ECH + HTTP/3 探针 ==")
@@ -800,65 +959,58 @@ class MainActivity : Activity() {
 
               // 判定口径：拿到 HTTP 响应（哪怕 403/404）就算握手成功 = 这条路径支持 H3；
               // 握手被断/超时 = 不支持。带 ECH 与不带 ECH 分开记，才能分辨"是不是 ECH 的锅"。
-              val verdicts = mutableListOf<String>()
+              // 提速：各臂并行跑（原来串行，失败臂 5 秒 × 3 次 × 臂数能拖到一分多钟）。
+              // 每臂内部 3 次仍串行（重试语义不变）；各臂的明细先收进本地串，最后按原顺序回放，
+              // 日志不交错；进度随完成数实时更新。
+              val jobs = ArrayList<ArmJob>()
               for ((srcLabel, ip) in sources) {
-                say("########## 来源：$srcLabel（$ip）##########")
                 // 关键对照：带 ECH 与 不带 ECH（明文 SNI）
                 // 三组对照：目标域自带 / CF 官方活值（＝App 策略）/ 明文 SNI
-                val arms = ArrayList<Pair<String, String>>()
                 if (echB64.isNotEmpty()) {
-                    arms += (if (manualEch.isNotEmpty()) "带 ECH（手动注入）" else "带 ECH（目标域自带）") to echB64
+                    jobs += ArmJob(srcLabel, ip, if (manualEch.isNotEmpty()) "带 ECH（手动注入）" else "带 ECH（目标域自带）", echB64)
                 }
                 if (officialEch.isNotEmpty()) {
-                    arms += "带 ECH（CF 官方活值＝App 策略）" to officialEch
+                    jobs += ArmJob(srcLabel, ip, "带 ECH（CF 官方活值＝App 策略）", officialEch)
                 }
-                arms += "无 ECH（明文 SNI）" to ""
-                for ((armName, armEch) in arms) {
-                    say("===== [$srcLabel] $armName =====")
-                    var okCount = 0
-                    var hsSum = 0L
-                    var totalSum = 0L
-                    var lastStatus = 0
-                    var lastErr = ""
-                    for (i in 1..3) {
-                        say("---- $armName 第 $i 次 ----")
-                        val t0 = System.currentTimeMillis()
-                        val json = try {
-                            ProbeNative.h3Fetch(host, ip, armEch, realPath, referer, caPath, "")
-                        } catch (t: Throwable) {
-                            say("JNI 异常：" + t.message)
-                            lastErr = "JNI 异常：" + t.message
-                            continue
-                        }
-                        val wall = System.currentTimeMillis() - t0
-                        val o = JSONObject(json)
-                        val err = o.optString("error", "")
-                        if (err.isNotEmpty() && err != "null") say("错误   : " + err)
-                        say("握手   : " + o.optLong("hs_ms") + " ms ｜ ALPN=" + o.optString("alpn"))
-                        say("ECH    : override=" + o.optString("ech_override", "null") +
-                                " ｜ retry=" + o.optInt("ech_retry_len") + " 字节")
-                        say("H3     : status=" + o.optInt("status") + " ｜ 首字节=" + o.optLong("first_byte_ms") +
-                                "ms ｜ 总耗时=" + o.optLong("total_ms") + "ms ｜ 字节=" + o.optLong("body_len"))
-                        say("响应头 : cf-ray=" + o.optString("cf_ray") + " server=" + o.optString("server"))
-                        say("诊断   : sent=" + o.optLong("sent") + " recv=" + o.optLong("recv") +
-                                " peer_err=" + o.optString("peer_err", "-") + " ｜ 墙钟=" + wall + "ms")
-                        say("")
-                        if (err.isNotEmpty() && err != "null") {
-                            lastErr = err
-                        } else {
-                            okCount++
-                            hsSum += o.optLong("hs_ms")
-                            totalSum += o.optLong("total_ms")
-                            lastStatus = o.optInt("status")
-                        }
-                    }
-                    verdicts += if (okCount > 0) {
-                        "✓ [$srcLabel] $armName：H3 可用（成功 " + okCount + "/3，平均握手 " + (hsSum / okCount) +
-                                "ms，平均总耗时 " + (totalSum / okCount) + "ms，状态 " + lastStatus + "）"
-                    } else {
-                        "✗ [$srcLabel] $armName：H3 不可用（0/3）" + (if (lastErr.isEmpty()) "" else "；末次错误：" + lastErr)
-                    }
+                jobs += ArmJob(srcLabel, ip, "无 ECH（明文 SNI）", "")
+              }
+              val totalArms = jobs.size
+              val doneArms = AtomicInteger(0)
+              ui {
+                progress.visibility = View.VISIBLE
+                progress.text = "高级测试进行中：已完成 0/$totalArms 臂…"
+              }
+              val pool = Executors.newFixedThreadPool(4)
+              val ecs = ExecutorCompletionService<Pair<Int, ArmResult>>(pool)
+              jobs.forEachIndexed { idx, job ->
+                ecs.submit<Pair<Int, ArmResult>> {
+                    val r = runArm(job, host, realPath, referer, caPath)
+                    val d = doneArms.incrementAndGet()
+                    ui { progress.text = "高级测试进行中：已完成 $d/$totalArms 臂…" }
+                    idx to r
                 }
+              }
+              val results = arrayOfNulls<ArmResult>(totalArms)
+              try {
+                repeat(totalArms) {
+                    val (idx, r) = ecs.take().get()
+                    results[idx] = r
+                }
+              } finally {
+                pool.shutdown()
+              }
+              val verdicts = mutableListOf<String>()
+              var lastSrc = ""
+              for ((idx, job) in jobs.withIndex()) {
+                if (job.srcLabel != lastSrc) {
+                    say("########## 来源：${job.srcLabel}（${job.ip}）##########")
+                    lastSrc = job.srcLabel
+                }
+                val r = results[idx]!!
+                say("===== [${job.srcLabel}] ${job.armName} =====")
+                say(r.detail)
+                say("")
+                verdicts += r.verdict
               }
                 say("")
                 say("============= 结论汇总 =============")
@@ -890,12 +1042,64 @@ class MainActivity : Activity() {
         }
     }
 
+    /** 高级测试的一条臂：3 次串行重试，明细收进本地串（调用方并行跑多臂时日志不交错） */
+    private fun runArm(
+        job: ArmJob, host: String, realPath: String, referer: String, caPath: String,
+    ): ArmResult {
+        val sb = StringBuilder()
+        var okCount = 0
+        var hsSum = 0L
+        var totalSum = 0L
+        var lastStatus = 0
+        var lastErr = ""
+        for (i in 1..3) {
+            sb.append("---- ${job.armName} 第 $i 次 ----\n")
+            val t0 = System.currentTimeMillis()
+            val json = try {
+                ProbeNative.h3Fetch(host, job.ip, job.armEch, realPath, referer, caPath, "")
+            } catch (t: Throwable) {
+                sb.append("JNI 异常：" + t.message + "\n")
+                lastErr = "JNI 异常：" + t.message
+                continue
+            }
+            val wall = System.currentTimeMillis() - t0
+            val o = JSONObject(json)
+            val err = o.optString("error", "")
+            if (err.isNotEmpty() && err != "null") sb.append("错误   : " + err + "\n")
+            sb.append("握手   : " + o.optLong("hs_ms") + " ms ｜ ALPN=" + o.optString("alpn") + "\n")
+            sb.append("ECH    : override=" + o.optString("ech_override", "null") +
+                    " ｜ retry=" + o.optInt("ech_retry_len") + " 字节\n")
+            sb.append("H3     : status=" + o.optInt("status") + " ｜ 首字节=" + o.optLong("first_byte_ms") +
+                    "ms ｜ 总耗时=" + o.optLong("total_ms") + "ms ｜ 字节=" + o.optLong("body_len") + "\n")
+            sb.append("响应头 : cf-ray=" + o.optString("cf_ray") + " server=" + o.optString("server") + "\n")
+            sb.append("诊断   : sent=" + o.optLong("sent") + " recv=" + o.optLong("recv") +
+                    " peer_err=" + o.optString("peer_err", "-") + " ｜ 墙钟=" + wall + "ms\n")
+            sb.append("\n")
+            if (err.isNotEmpty() && err != "null") {
+                lastErr = err
+            } else {
+                okCount++
+                hsSum += o.optLong("hs_ms")
+                totalSum += o.optLong("total_ms")
+                lastStatus = o.optInt("status")
+            }
+        }
+        val verdict = if (okCount > 0) {
+            "✓ [${job.srcLabel}] ${job.armName}：H3 可用（成功 " + okCount + "/3，平均握手 " + (hsSum / okCount) +
+                    "ms，平均总耗时 " + (totalSum / okCount) + "ms，状态 " + lastStatus + "）"
+        } else {
+            "✗ [${job.srcLabel}] ${job.armName}：H3 不可用（0/3）" + (if (lastErr.isEmpty()) "" else "；末次错误：" + lastErr)
+        }
+        return ArmResult(verdict, sb.toString().trimEnd())
+    }
+
     private fun finishRun(event: String) {
         persistLog()
         upload(event, mapOf("log" to currentLog(), "gateway" to currentDoh()))
         ui {
             btn.isEnabled = true; btnWv.isEnabled = true; btnNet.isEnabled = true
             if (::btnTcp.isInitialized) btnTcp.isEnabled = true
+            if (::progress.isInitialized) progress.visibility = View.GONE
         }
     }
 
@@ -909,7 +1113,7 @@ class MainActivity : Activity() {
      */
     private fun runWebViewArm() {
         btnWv.isEnabled = false
-        synchronized(log) { log.setLength(0) }
+        clearLog()
         try {
             say("===== WebView 直开（不拦截/不注入/无 ECH）=====")
             say("载体 : " + carrier())
@@ -950,6 +1154,7 @@ class MainActivity : Activity() {
                 w
             }
 
+            view.visibility = View.VISIBLE
             view.loadUrl(target)
             Handler(Looper.getMainLooper()).postDelayed({
                 if (!reported) {
@@ -981,8 +1186,9 @@ class MainActivity : Activity() {
         say("---- $label ----")
         val latch = java.util.concurrent.CountDownLatch(1)
         val density = resources.displayMetrics.density
+        var altView: WebView? = null
         ui {
-            val w = WebView(this)
+            val w = WebView(this).also { altView = it }
             w.settings.javaScriptEnabled = true
             w.layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, (density * 180).toInt(),
@@ -1032,10 +1238,13 @@ class MainActivity : Activity() {
             say("  （20 秒无回报）")
         }
         say("")
+        // 用完即拆：原来每次点都往界面追加一个 WebView，越用越挤
+        ui { altView?.let { root.removeView(it) } }
     }
 
     /** colo 对照：同一 zone 的 /cdn-cgi/trace，H3(quiche) 与 TCP 各取 2 次，比 colo 与延时 */
     private fun runColoTraceArm() {
+        hideWebViews()
         say("===== colo 对照（/cdn-cgi/trace，同一 zone）=====")
         say("载体 : " + carrier())
         if (currentDoh().isBlank()) {
