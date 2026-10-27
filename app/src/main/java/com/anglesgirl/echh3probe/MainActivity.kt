@@ -22,7 +22,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import java.util.concurrent.Callable
-import java.util.concurrent.ExecutorCompletionService
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 import org.json.JSONObject
@@ -981,25 +981,30 @@ class MainActivity : Activity() {
                 progress.visibility = View.VISIBLE
                 progress.text = "高级测试进行中：已完成 0/$totalArms 臂…"
               }
-              val pool = Executors.newFixedThreadPool(4)
-              val ecs = ExecutorCompletionService<Pair<Int, ArmResult>>(pool)
-              jobs.forEachIndexed { idx, job ->
-                ecs.submit(Callable<Pair<Int, ArmResult>> {
-                    val r = runArm(job, host, realPath, referer, caPath)
-                    val d = doneArms.incrementAndGet()
-                    ui { progress.text = "高级测试进行中：已完成 $d/$totalArms 臂…" }
-                    idx to r
-                })
-              }
+              // 不用 ExecutorCompletionService.submit：它在 Kotlin 里对 Callable lambda 的重载解析
+              // 会报 Inapplicable candidate（CI 实测）。改用无重载的 execute + 倒计时锁，语义相同。
               val results = arrayOfNulls<ArmResult>(totalArms)
-              try {
-                repeat(totalArms) {
-                    val (idx, r) = ecs.take().get()
-                    results[idx] = r
+              val latch = CountDownLatch(totalArms)
+              val pool = Executors.newFixedThreadPool(4)
+              jobs.forEachIndexed { idx, job ->
+                pool.execute {
+                    try {
+                        results[idx] = runArm(job, host, realPath, referer, caPath)
+                    } catch (t: Throwable) {
+                        // 单臂异常只记该臂失败，不拖垮整轮测试（原来会直接 abort）
+                        results[idx] = ArmResult(
+                            "✗ [${job.srcLabel}] ${job.armName}：H3 不可用（0/3）；臂内异常：" + t.message,
+                            "臂内异常：" + t.message,
+                        )
+                    } finally {
+                        val d = doneArms.incrementAndGet()
+                        ui { progress.text = "高级测试进行中：已完成 $d/$totalArms 臂…" }
+                        latch.countDown()
+                    }
                 }
-              } finally {
-                pool.shutdown()
               }
+              latch.await()
+              pool.shutdown()
               val verdicts = mutableListOf<String>()
               var lastSrc = ""
               for ((idx, job) in jobs.withIndex()) {
